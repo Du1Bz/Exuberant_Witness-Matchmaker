@@ -88,12 +88,12 @@ def draw_match(state):
 
 @bot.event
 async def on_ready():
-    print(f"🤖 {bot.user.name} がオンラインになりました！(私はモニターですから)")
+    print(f"🤖 {bot.user.name} がオンラインになりました！")
 
 @bot.command()
 async def next(ctx, count: int = 1):
     if count < 1 or count > 5:
-        await ctx.send("💡 一度に要請できるのは 1〜5 試合までです、リクレイマー。")
+        await ctx.send("💡 一度に要請できるのは 1〜5 試合までです。")
         return
 
     channel_id = ctx.channel.id
@@ -112,7 +112,7 @@ async def next(ctx, count: int = 1):
     
     msg = f"🛸 **343 Guilty Spark がシミュレーションを選択しました** (残データ: {remaining}/{len(FULL_DECK)})\n"
     for i, m in enumerate(results):
-        msg += f"\n【第 {i+1} 任務】🗺️ **{m['map']}** |  ⚔️ **{m['rule']}**"
+        msg += f"\n【第 {i+1} 試合】🗺️ **{m['map']}** |  ⚔️ **{m['rule']}**"
         
     await ctx.send(msg)
 
@@ -124,7 +124,7 @@ async def redraw(ctx):
     # 直前のデータがあるか確認
     last_results = state.get("last_results", [])
     if not last_results:
-        await ctx.send("❌ 引き直すための直前のシミュレーションデータが見つかりません、リクレイマー。")
+        await ctx.send("❌ 引き直すための直前のシミュレーションデータが見つかりません。")
         return
         
     # 1. 直前の選出を「最近の履歴(history)」から消去（引き直しの判定で弾かれないようにするため）
@@ -156,7 +156,7 @@ async def redraw(ctx):
     
     msg = f"🔄 **直前のシミュレーションを山札に戻し、引き直しました** (残データ: {remaining}/{len(FULL_DECK)})\n"
     for i, m in enumerate(results):
-        msg += f"\n【第 {i+1} 任務】🗺️ **{m['map']}** |  ⚔️ **{m['rule']}**"
+        msg += f"\n【第 {i+1} 試合】🗺️ **{m['map']}** |  ⚔️ **{m['rule']}**"
         
     await ctx.send(msg)
 
