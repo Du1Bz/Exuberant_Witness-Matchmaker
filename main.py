@@ -48,15 +48,18 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-def load_guild_state(guild_id):
-    path = f"{DATA_DIR}/{guild_id}.json"
+# 変更前：load_guild_state / save_guild_state
+# 変更後：load_channel_state / save_channel_state にして、引数を channel_id に
+
+def load_channel_state(channel_id):
+    path = f"{DATA_DIR}/{channel_id}.json"
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     return {"deck": [], "history": []}
 
-def save_guild_state(guild_id, state):
-    path = f"{DATA_DIR}/{guild_id}.json"
+def save_channel_state(channel_id, state):
+    path = f"{DATA_DIR}/{channel_id}.json"
     with open(path, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
@@ -117,15 +120,16 @@ async def next(ctx, count: int = 1):
         await ctx.send("💡 一度に要請できるのは 1〜5 試合までです。")
         return
 
-    guild_id = ctx.guild.id
-    state = load_guild_state(guild_id)
+    # ★ここを guild.id から channel.id に変更！
+    channel_id = ctx.channel.id
+    state = load_channel_state(channel_id)
     
     results = []
     for _ in range(count):
         match = draw_match(state)
         results.append(match)
         
-    save_guild_state(guild_id, state)
+    save_channel_state(channel_id, state)
     
     remaining = len(state["deck"]) if state["deck"] else len(FULL_DECK)
     
@@ -137,11 +141,12 @@ async def next(ctx, count: int = 1):
 
 @bot.command()
 async def reset(ctx):
-    guild_id = ctx.guild.id
-    path = f"{DATA_DIR}/{guild_id}.json"
+    # ★ここも guild.id から channel.id に変更！
+    channel_id = ctx.channel.id
+    path = f"{DATA_DIR}/{channel_id}.json"
     if os.path.exists(path):
         os.remove(path)
-    await ctx.send("🔄 データインデックスをリフレッシュしました。山札を再シャッフルします。")
+    await ctx.send("🔄 データインデックスをリフレッシュしました。このチャンネルの山札を再シャッフルします。")
 
 # --- Render用 ダミーWebサーバー ---
 def run_dummy_server():
