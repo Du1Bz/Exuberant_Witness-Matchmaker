@@ -15,31 +15,9 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 DATA_DIR = "data"
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# 競技マップ・ルールリスト
-FULL_DECK = [
-    {"map": "Aquarius",  "rule": "CTF_5cap"},
-    {"map": "Empyrean",  "rule": "CTF_3cap"},
-    {"map": "Fortress",  "rule": "CTF_3cap"},
-    {"map": "Lattice",   "rule": "King of the Hill"},
-    {"map": "Lattice",   "rule": "Oddball"},
-    {"map": "Live Fire", "rule": "King of the Hill"},
-    {"map": "Live Fire", "rule": "Oddball"},
-    {"map": "Live Fire", "rule": "Slayer"},
-    {"map": "Live Fire", "rule": "Strongholds"},
-    {"map": "Origin",    "rule": "CTF_3cap"},
-    {"map": "Origin",    "rule": "Slayer"},
-    {"map": "Recharge",  "rule": "King of the Hill"},
-    {"map": "Recharge",  "rule": "Oddball"},
-    {"map": "Recharge",  "rule": "Slayer"},
-    {"map": "Recharge",  "rule": "Strongholds"},
-    {"map": "Solitude",  "rule": "King of the Hill"},
-    {"map": "Solitude",  "rule": "Slayer"},
-    {"map": "Streets",   "rule": "Oddball"},
-    {"map": "Streets",   "rule": "Slayer"},
-    {"map": "Vacancy",   "rule": "King of the Hill"},
-    {"map": "Vacancy",   "rule": "Oddball"},
-    {"map": "Vacancy",   "rule": "Slayer"}
-]
+# 競技マップ・ルールリストを deck.json から読み込む
+with open("deck.json", "r", encoding="utf-8") as f:
+    FULL_DECK = json.load(f)
 
 COOLDOWN_SIZE = 5
 
@@ -48,15 +26,13 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# 変更前：load_guild_state / save_guild_state
-# 変更後：load_channel_state / save_channel_state にして、引数を channel_id に
-
+# チャンネルごとにデータを読み書き
 def load_channel_state(channel_id):
     path = f"{DATA_DIR}/{channel_id}.json"
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
-    return {"deck": [], "history": []}
+    return {"deck": [], "history": [], "last_results": []}
 
 def save_channel_state(channel_id, state):
     path = f"{DATA_DIR}/{channel_id}.json"
@@ -112,15 +88,14 @@ def draw_match(state):
 
 @bot.event
 async def on_ready():
-    print(f"🤖 {bot.user.name} がオンラインになりました！")
+    print(f"🤖 {bot.user.name} がオンラインになりました！(私はモニターですから)")
 
 @bot.command()
 async def next(ctx, count: int = 1):
     if count < 1 or count > 5:
-        await ctx.send("💡 一度に要請できるのは 1〜5 試合までです。")
+        await ctx.send("💡 一度に要請できるのは 1〜5 試合までです、リクレイマー。")
         return
 
-    # ★ここを guild.id から channel.id に変更！
     channel_id = ctx.channel.id
     state = load_channel_state(channel_id)
     
@@ -129,19 +104,64 @@ async def next(ctx, count: int = 1):
         match = draw_match(state)
         results.append(match)
         
+    # 直前の選出結果を記録しておく
+    state["last_results"] = results
     save_channel_state(channel_id, state)
     
     remaining = len(state["deck"]) if state["deck"] else len(FULL_DECK)
     
     msg = f"🛸 **343 Guilty Spark がシミュレーションを選択しました** (残データ: {remaining}/{len(FULL_DECK)})\n"
     for i, m in enumerate(results):
-        msg += f"\n【第 {i+1} 試合】🗺️ **{m['map']}** |  ⚔️ **{m['rule']}**"
+        msg += f"\n【第 {i+1} 任務】🗺️ **{m['map']}** |  ⚔️ **{m['rule']}**"
+        
+    await ctx.send(msg)
+
+@bot.command()
+async def redraw(ctx):
+    channel_id = ctx.channel.id
+    state = load_channel_state(channel_id)
+    
+    # 直前のデータがあるか確認
+    last_results = state.get("last_results", [])
+    if not last_results:
+        await ctx.send("❌ 引き直すための直前のシミュレーションデータが見つかりません、リクレイマー。")
+        return
+        
+    # 1. 直前の選出を「最近の履歴(history)」から消去（引き直しの判定で弾かれないようにするため）
+    for match in last_results:
+        if match in state["history"]:
+            state["history"].remove(match)
+            
+    # 2. 直前の選出を山札(deck)に戻す
+    if state["deck"] is None:
+        state["deck"] = []
+    for match in last_results:
+        state["deck"].append(match)
+        
+    # 3. 山札を再シャッフル
+    random.shuffle(state["deck"])
+    
+    # 4. 直前と同じ件数分を、新しく引き直す
+    count = len(last_results)
+    results = []
+    for _ in range(count):
+        match = draw_match(state)
+        results.append(match)
+        
+    # 今回引き直した結果を新しく「直前の結果」として上書き保存
+    state["last_results"] = results
+    save_channel_state(channel_id, state)
+    
+    remaining = len(state["deck"]) if state["deck"] else len(FULL_DECK)
+    
+    msg = f"🔄 **直前のシミュレーションを山札に戻し、引き直しました** (残データ: {remaining}/{len(FULL_DECK)})\n"
+    for i, m in enumerate(results):
+        msg += f"\n【第 {i+1} 任務】🗺️ **{m['map']}** |  ⚔️ **{m['rule']}**"
         
     await ctx.send(msg)
 
 @bot.command()
 async def reset(ctx):
-    # ★ここも guild.id から channel.id に変更！
     channel_id = ctx.channel.id
     path = f"{DATA_DIR}/{channel_id}.json"
     if os.path.exists(path):
@@ -157,7 +177,6 @@ def run_dummy_server():
             self.end_headers()
             self.wfile.write("I am the Monitor of Installation 04. I am functioning normally.".encode("utf-8"))
 
-        # ログがターミナルを埋め尽くさないようにミュート
         def log_message(self, format, *args):
             return
 
@@ -167,9 +186,7 @@ def run_dummy_server():
     server.serve_forever()
 
 if __name__ == "__main__":
-    # Webサーバーを別スレッドでバックグラウンド起動
     server_thread = threading.Thread(target=run_dummy_server, daemon=True)
     server_thread.start()
     
-    # Discord Botの起動
     bot.run(TOKEN)
