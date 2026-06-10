@@ -4,6 +4,7 @@ import random
 import threading
 from http.server import SimpleHTTPRequestHandler, HTTPServer
 import discord
+from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
@@ -21,10 +22,9 @@ with open("deck.json", "r", encoding="utf-8") as f:
 
 COOLDOWN_SIZE = 5
 
-# Botの初期設定
+# Botの初期設定（スラッシュコマンド専用）
 intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix='!', intents=intents)
+bot = commands.Bot(command_prefix=None, intents=intents)
 
 # チャンネルごとにデータを読み書き
 def load_channel_state(channel_id):
@@ -88,15 +88,17 @@ def draw_match(state):
 
 @bot.event
 async def on_ready():
+    await bot.tree.sync()
     print(f"🤖 {bot.user.name} がオンラインになりました！")
 
-@bot.command()
-async def next(ctx, count: int = 1):
+@bot.tree.command(name="next", description="シミュレーションを選択します")
+@app_commands.describe(count="選択する試合数（1〜5、デフォルト: 1）")
+async def next(interaction: discord.Interaction, count: int = 1):
     if count < 1 or count > 5:
-        await ctx.send("💡 一度に要請できるのは 1〜5 試合までです。")
+        await interaction.response.send_message("💡 一度に要請できるのは 1〜5 試合までです。", ephemeral=True)
         return
 
-    channel_id = ctx.channel.id
+    channel_id = interaction.channel_id
     state = load_channel_state(channel_id)
     
     results = []
@@ -114,17 +116,17 @@ async def next(ctx, count: int = 1):
     for i, m in enumerate(results):
         msg += f"\n【第 {i+1} 試合】🗺️ **{m['map']}** |  ⚔️ **{m['rule']}**"
         
-    await ctx.send(msg)
+    await interaction.response.send_message(msg)
 
-@bot.command()
-async def redraw(ctx):
-    channel_id = ctx.channel.id
+@bot.tree.command(name="redraw", description="直前のシミュレーションを引き直します")
+async def redraw(interaction: discord.Interaction):
+    channel_id = interaction.channel_id
     state = load_channel_state(channel_id)
     
     # 直前のデータがあるか確認
     last_results = state.get("last_results", [])
     if not last_results:
-        await ctx.send("❌ 引き直すための直前のシミュレーションデータが見つかりません。")
+        await interaction.response.send_message("❌ 引き直すための直前のシミュレーションデータが見つかりません。", ephemeral=True)
         return
         
     # 1. 直前の選出を「最近の履歴(history)」から消去（引き直しの判定で弾かれないようにするため）
@@ -158,19 +160,19 @@ async def redraw(ctx):
     for i, m in enumerate(results):
         msg += f"\n【第 {i+1} 試合】🗺️ **{m['map']}** |  ⚔️ **{m['rule']}**"
         
-    await ctx.send(msg)
+    await interaction.response.send_message(msg)
 
-@bot.command()
-async def reset(ctx):
-    channel_id = ctx.channel.id
+@bot.tree.command(name="reset", description="このチャンネルの山札をリセットして再シャッフルします")
+async def reset(interaction: discord.Interaction):
+    channel_id = interaction.channel_id
     path = f"{DATA_DIR}/{channel_id}.json"
     if os.path.exists(path):
         os.remove(path)
-    await ctx.send("🔄 データインデックスをリフレッシュしました。このチャンネルの山札を再シャッフルします。")
+    await interaction.response.send_message("🔄 データインデックスをリフレッシュしました。このチャンネルの山札を再シャッフルします。")
 
-@bot.command()
-async def deck(ctx):
-    channel_id = ctx.channel.id
+@bot.tree.command(name="deck", description="現在のインデックスに残っているシミュレーションデータを表示します")
+async def deck(interaction: discord.Interaction):
+    channel_id = interaction.channel_id
     state = load_channel_state(channel_id)
     
     current_deck = state.get("deck", [])
@@ -191,7 +193,7 @@ async def deck(ctx):
         
     msg += "\n".join(lines)
     
-    await ctx.send(msg)
+    await interaction.response.send_message(msg)
 
 # --- Render用 ダミーWebサーバー ---
 def run_dummy_server():
