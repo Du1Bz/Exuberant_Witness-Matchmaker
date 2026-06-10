@@ -186,7 +186,7 @@ async def deck(ctx):
     # 残っているカードを一覧表示
     lines = []
     for card in cards:
-        lines.append(f"・🗺️  | ⚔️ **")
+        lines.append(f"・🗺️ **{card['map']}** | ⚔️ **{card['rule']}**")
         
     msg += "\n".join(lines)
     
