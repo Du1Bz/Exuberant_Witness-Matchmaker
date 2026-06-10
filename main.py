@@ -1,6 +1,8 @@
 import os
 import json
 import random
+import threading
+from http.server import SimpleHTTPRequestHandler, HTTPServer
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
@@ -47,7 +49,6 @@ intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 def load_guild_state(guild_id):
-    """サーバーごとの状態を読み込む"""
     path = f"{DATA_DIR}/{guild_id}.json"
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:
@@ -55,13 +56,11 @@ def load_guild_state(guild_id):
     return {"deck": [], "history": []}
 
 def save_guild_state(guild_id, state):
-    """サーバーごとの状態を保存する"""
     path = f"{DATA_DIR}/{guild_id}.json"
     with open(path, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
 def draw_match(state):
-    """山札から1試合分を引く（連続防止ロジック込み）"""
     deck = state["deck"]
     history = state["history"]
 
@@ -110,13 +109,12 @@ def draw_match(state):
 
 @bot.event
 async def on_ready():
-    print(f"🤖 {bot.user.name} がオンラインになりました")
+    print(f"🤖 {bot.user.name} がオンラインになりました！")
 
 @bot.command()
 async def next(ctx, count: int = 1):
-    """次の試合を指定数だけ選出する"""
     if count < 1 or count > 5:
-        await ctx.send("💡 一度に要請できるのは 1〜5 試合までです")
+        await ctx.send("💡 一度に要請できるのは 1〜5 試合までです。")
         return
 
     guild_id = ctx.guild.id
@@ -129,7 +127,6 @@ async def next(ctx, count: int = 1):
         
     save_guild_state(guild_id, state)
     
-    # 残り枚数の計算（初期状態の空デッキのときは22枚として扱う）
     remaining = len(state["deck"]) if state["deck"] else len(FULL_DECK)
     
     msg = f"🛸 **343 Guilty Spark がシミュレーションを選択しました** (残データ: {remaining}/{len(FULL_DECK)})\n"
@@ -140,12 +137,34 @@ async def next(ctx, count: int = 1):
 
 @bot.command()
 async def reset(ctx):
-    """山札データを初期化する"""
     guild_id = ctx.guild.id
     path = f"{DATA_DIR}/{guild_id}.json"
     if os.path.exists(path):
         os.remove(path)
     await ctx.send("🔄 データインデックスをリフレッシュしました。山札を再シャッフルします。")
 
-# Botの起動
-bot.run(TOKEN)
+# --- Render用 ダミーWebサーバー ---
+def run_dummy_server():
+    class DummyHandler(SimpleHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write("I am the Monitor of Installation 04. I am functioning normally.".encode("utf-8"))
+
+        # ログがターミナルを埋め尽くさないようにミュート
+        def log_message(self, format, *args):
+            return
+
+    port = int(os.getenv("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), DummyHandler)
+    print(f"🌐 ダミーWebサーバーをポート {port} で起動しました。")
+    server.serve_forever()
+
+if __name__ == "__main__":
+    # Webサーバーを別スレッドでバックグラウンド起動
+    server_thread = threading.Thread(target=run_dummy_server, daemon=True)
+    server_thread.start()
+    
+    # Discord Botの起動
+    bot.run(TOKEN)
