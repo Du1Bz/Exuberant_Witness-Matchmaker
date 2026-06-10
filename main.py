@@ -168,6 +168,30 @@ async def reset(ctx):
         os.remove(path)
     await ctx.send("🔄 データインデックスをリフレッシュしました。このチャンネルの山札を再シャッフルします。")
 
+@bot.command()
+async def deck(ctx):
+    channel_id = ctx.channel.id
+    state = load_channel_state(channel_id)
+    
+    current_deck = state.get("deck", [])
+    
+    # 山札が空（初期状態、または引ききった直後）の場合は全カードとみなす
+    if not current_deck:
+        cards = FULL_DECK
+        msg = f"🗂️ **現在のインデックスは初期状態です** (残データ: {len(FULL_DECK)}/{len(FULL_DECK)})\n\n"
+    else:
+        cards = current_deck
+        msg = f"🗂️ **現在のインデックスに残存しているシミュレーションデータです (残データ: {len(current_deck)}/{len(FULL_DECK)})\n\n"
+    
+    # 残っているカードを一覧表示
+    lines = []
+    for card in cards:
+        lines.append(f"・🗺️  | ⚔️ **")
+        
+    msg += "\n".join(lines)
+    
+    await ctx.send(msg)
+
 # --- Render用 ダミーWebサーバー ---
 def run_dummy_server():
     class DummyHandler(SimpleHTTPRequestHandler):
