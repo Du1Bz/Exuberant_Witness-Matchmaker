@@ -5,7 +5,6 @@ import threading
 from http.server import SimpleHTTPRequestHandler, HTTPServer
 import discord
 from discord import app_commands
-from discord.ext import commands
 from dotenv import load_dotenv
 
 # .envファイルから環境変数を読み込む
@@ -22,9 +21,10 @@ with open("deck.json", "r", encoding="utf-8") as f:
 
 COOLDOWN_SIZE = 5
 
-# Botの初期設定（スラッシュコマンド専用）
+# Botの初期設定（スラッシュコマンド専用。Client + CommandTree を使用）
 intents = discord.Intents.default()
-bot = commands.Bot(command_prefix=None, intents=intents)
+bot = discord.Client(intents=intents)
+tree = app_commands.CommandTree(bot)
 
 # チャンネルごとにデータを読み書き
 def load_channel_state(channel_id):
@@ -88,10 +88,10 @@ def draw_match(state):
 
 @bot.event
 async def on_ready():
-    await bot.tree.sync()
+    await tree.sync()
     print(f"🤖 {bot.user.name} がオンラインになりました！")
 
-@bot.tree.command(name="next", description="シミュレーションを選択します")
+@tree.command(name="next", description="シミュレーションを選択します")
 @app_commands.describe(count="選択する試合数（1〜5、デフォルト: 1）")
 async def next(interaction: discord.Interaction, count: int = 1):
     if count < 1 or count > 5:
@@ -118,7 +118,7 @@ async def next(interaction: discord.Interaction, count: int = 1):
         
     await interaction.response.send_message(msg)
 
-@bot.tree.command(name="redraw", description="直前のシミュレーションを引き直します")
+@tree.command(name="redraw", description="直前のシミュレーションを引き直します")
 async def redraw(interaction: discord.Interaction):
     channel_id = interaction.channel_id
     state = load_channel_state(channel_id)
@@ -162,7 +162,7 @@ async def redraw(interaction: discord.Interaction):
         
     await interaction.response.send_message(msg)
 
-@bot.tree.command(name="reset", description="このチャンネルの山札をリセットして再シャッフルします")
+@tree.command(name="reset", description="このチャンネルの山札をリセットして再シャッフルします")
 async def reset(interaction: discord.Interaction):
     channel_id = interaction.channel_id
     path = f"{DATA_DIR}/{channel_id}.json"
@@ -170,7 +170,7 @@ async def reset(interaction: discord.Interaction):
         os.remove(path)
     await interaction.response.send_message("🔄 データインデックスをリフレッシュしました。このチャンネルの山札を再シャッフルします。")
 
-@bot.tree.command(name="deck", description="現在のインデックスに残っているシミュレーションデータを表示します")
+@tree.command(name="deck", description="現在のインデックスに残っているシミュレーションデータを表示します")
 async def deck(interaction: discord.Interaction):
     channel_id = interaction.channel_id
     state = load_channel_state(channel_id)
