@@ -183,9 +183,10 @@ async def deck(ctx):
         cards = current_deck
         msg = f"🗂️ **現在のインデックスに残存しているシミュレーションデータです (残データ: {len(current_deck)}/{len(FULL_DECK)})\n\n"
     
-    # 残っているカードを一覧表示
+    # マップ名→ルール名のアルファベット順にソートして一覧表示
+    sorted_cards = sorted(cards, key=lambda c: (c["map"], c["rule"]))
     lines = []
-    for card in cards:
+    for card in sorted_cards:
         lines.append(f"・🗺️ **{card['map']}** | ⚔️ **{card['rule']}**")
         
     msg += "\n".join(lines)
