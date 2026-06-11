@@ -41,6 +41,15 @@ def save_channel_state(channel_id, state):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
+def is_rule_on_cooldown(card, recent_history):
+    """直近の履歴の中で、同じルールベース（CTF/Slayerなど）が使われているか"""
+    card_rule_base = card["rule"].split('_')[0]
+    return any(card_rule_base == h["rule"].split('_')[0] for h in recent_history)
+
+def is_map_on_cooldown(card, recent_history):
+    """直近の履歴の中で、同じマップが使われているか"""
+    return any(card["map"] == h["map"] for h in recent_history)
+
 def draw_match(state):
     deck = state["deck"]
     history = state["history"]
@@ -55,27 +64,52 @@ def draw_match(state):
     # クールダウン対象の直近履歴（履歴が足りない場合は全件）
     recent_history = history[-RULE_COOLDOWN:] if len(history) >= RULE_COOLDOWN else history
 
+    # === 第1パス: 全フィルター（履歴一致 + マップ/ルールクールダウン） ===
     while len(deck) > 0:
         card = deck.pop(0)
-        card_rule_base = card["rule"].split('_')[0]
         
-        # 直近の履歴全体で同じマップ・ルールがないかチェック
-        is_recent_combo = card in history
-        is_same_map = any(card["map"] == h["map"] for h in recent_history)
-        is_same_rule = any(card_rule_base == h["rule"].split('_')[0] for h in recent_history)
+        is_on_cooldown = (
+            card in history
+            or is_map_on_cooldown(card, recent_history)
+            or is_rule_on_cooldown(card, recent_history)
+        )
         
-        if not is_recent_combo and not is_same_map and not is_same_rule:
+        if not is_on_cooldown:
             selected = card
             break
         else:
             temp_drawn.append(card)
 
+    # === 残りが偏っていて選べない場合は山札を作り直す ===
+    if not selected:
+        deck = FULL_DECK.copy()
+        random.shuffle(deck)
+        temp_drawn = []
+        recent_history = history[-RULE_COOLDOWN:] if len(history) >= RULE_COOLDOWN else history
+        
+        while len(deck) > 0:
+            card = deck.pop(0)
+            
+            is_on_cooldown = (
+                card in history
+                or is_map_on_cooldown(card, recent_history)
+                or is_rule_on_cooldown(card, recent_history)
+            )
+            
+            if not is_on_cooldown:
+                selected = card
+                break
+            else:
+                temp_drawn.append(card)
+
+    # === それでもダメなら履歴完全一致だけ回避 ===
     if not selected:
         for i, card in enumerate(temp_drawn):
             if card not in history:
                 selected = temp_drawn.pop(i)
                 break
                 
+    # === 最終フォールバック: それでもダメなら強制 ===
     if not selected:
         selected = random.choice(FULL_DECK)
         if selected in temp_drawn:
