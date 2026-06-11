@@ -19,7 +19,9 @@ os.makedirs(DATA_DIR, exist_ok=True)
 with open("deck.json", "r", encoding="utf-8") as f:
     FULL_DECK = json.load(f)
 
-COOLDOWN_SIZE = 5
+COOLDOWN_SIZE = 5          # 履歴の保持数（完全一致のクールダウン）
+RULE_COOLDOWN = 3          # 直近N試合、同じルールベースをブロック（調整可能）
+MAP_COOLDOWN = 3           # 直近N試合、同じマップをブロック（調整可能）
 
 # Botの初期設定（スラッシュコマンド専用。Client + CommandTree を使用）
 intents = discord.Intents.default()
@@ -49,16 +51,18 @@ def draw_match(state):
 
     selected = None
     temp_drawn = []
-    last_match = history[-1] if len(history) > 0 else None
+    
+    # クールダウン対象の直近履歴（履歴が足りない場合は全件）
+    recent_history = history[-RULE_COOLDOWN:] if len(history) >= RULE_COOLDOWN else history
 
     while len(deck) > 0:
         card = deck.pop(0)
         card_rule_base = card["rule"].split('_')[0]
-        last_rule_base = last_match["rule"].split('_')[0] if last_match else None
         
+        # 直近の履歴全体で同じマップ・ルールがないかチェック
         is_recent_combo = card in history
-        is_same_map = last_match and (card["map"] == last_match["map"])
-        is_same_rule = last_rule_base and (card_rule_base == last_rule_base)
+        is_same_map = any(card["map"] == h["map"] for h in recent_history)
+        is_same_rule = any(card_rule_base == h["rule"].split('_')[0] for h in recent_history)
         
         if not is_recent_combo and not is_same_map and not is_same_rule:
             selected = card
