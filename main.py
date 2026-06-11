@@ -21,7 +21,7 @@ with open("deck.json", "r", encoding="utf-8") as f:
 
 COOLDOWN_SIZE = 5          # 履歴の保持数（完全一致のクールダウン）
 RULE_COOLDOWN = 3          # 直近N試合、同じルールベースをブロック（調整可能）
-MAP_COOLDOWN = 3           # 直近N試合、同じマップをブロック（調整可能）
+MAP_COOLDOWN = 4           # 直近N試合、同じマップをブロック（調整可能）
 
 # Botの初期設定（スラッシュコマンド専用。Client + CommandTree を使用）
 intents = discord.Intents.default()
