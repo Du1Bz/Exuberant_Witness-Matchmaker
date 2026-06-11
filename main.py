@@ -62,7 +62,8 @@ def draw_match(state):
     temp_drawn = []
     
     # クールダウン対象の直近履歴（履歴が足りない場合は全件）
-    recent_history = history[-RULE_COOLDOWN:] if len(history) >= RULE_COOLDOWN else history
+    rule_recent = history[-RULE_COOLDOWN:] if len(history) >= RULE_COOLDOWN else history
+    map_recent = history[-MAP_COOLDOWN:] if len(history) >= MAP_COOLDOWN else history
 
     # === 第1パス: 全フィルター（履歴一致 + マップ/ルールクールダウン） ===
     while len(deck) > 0:
@@ -70,8 +71,8 @@ def draw_match(state):
         
         is_on_cooldown = (
             card in history
-            or is_map_on_cooldown(card, recent_history)
-            or is_rule_on_cooldown(card, recent_history)
+            or is_map_on_cooldown(card, map_recent)
+            or is_rule_on_cooldown(card, rule_recent)
         )
         
         if not is_on_cooldown:
@@ -85,15 +86,16 @@ def draw_match(state):
         deck = FULL_DECK.copy()
         random.shuffle(deck)
         temp_drawn = []
-        recent_history = history[-RULE_COOLDOWN:] if len(history) >= RULE_COOLDOWN else history
+        rule_recent = history[-RULE_COOLDOWN:] if len(history) >= RULE_COOLDOWN else history
+        map_recent = history[-MAP_COOLDOWN:] if len(history) >= MAP_COOLDOWN else history
         
         while len(deck) > 0:
             card = deck.pop(0)
             
             is_on_cooldown = (
                 card in history
-                or is_map_on_cooldown(card, recent_history)
-                or is_rule_on_cooldown(card, recent_history)
+                or is_map_on_cooldown(card, map_recent)
+                or is_rule_on_cooldown(card, rule_recent)
             )
             
             if not is_on_cooldown:
@@ -221,7 +223,7 @@ async def deck(interaction: discord.Interaction):
         msg = f"🗂️ **現在のインデックスは初期状態です** (残データ: {len(FULL_DECK)}/{len(FULL_DECK)})\n\n"
     else:
         cards = current_deck
-        msg = f"🗂️ **現在のインデックスに残存しているシミュレーションデータです (残データ: {len(current_deck)}/{len(FULL_DECK)})\n\n"
+        msg = f"🗂️ **現在のインデックスに残存しているシミュレーションデータです** (残データ: {len(current_deck)}/{len(FULL_DECK)})\n\n"
     
     # マップ名→ルール名のアルファベット順にソートして一覧表示
     sorted_cards = sorted(cards, key=lambda c: (c["map"], c["rule"]))
