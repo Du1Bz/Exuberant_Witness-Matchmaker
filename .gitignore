@@ -10,3 +10,6 @@ data/
 
 # Pythonのキャッシュ
 __pycache__/
+
+# サンドボックス（テスト用スクリプト類）
+sandbox/
