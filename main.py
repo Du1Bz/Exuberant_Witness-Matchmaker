@@ -2,6 +2,8 @@ import os
 import json
 import random
 import threading
+import copy
+import asyncio
 from http.server import SimpleHTTPRequestHandler, HTTPServer
 import discord
 from discord import app_commands
@@ -24,6 +26,13 @@ RULE_COOLDOWN = 3          # 直近N試合、同じルールベースをブロ�
 MAP_COOLDOWN = 4           # 直近N試合、同じマップをブロック
 EXACT_COOLDOWN = 7         # 直近N試合、まったく同じマップ・ルールの組み合わせをブロック
 
+# === 排他制御（同時実行の競合対策） ===
+channel_locks = {}
+def get_channel_lock(channel_id):
+    if channel_id not in channel_locks:
+        channel_locks[channel_id] = asyncio.Lock()
+    return channel_locks[channel_id]
+
 # Botの初期設定（スラッシュコマンド専用）
 intents = discord.Intents.default()
 bot = discord.Client(intents=intents)
@@ -40,13 +49,14 @@ def load_channel_state(channel_id):
             if "played_cards" not in state: state["played_cards"] = []
             return state
             
-    # 新しいデータ構造: 山札、優先キュー、使用済み、履歴
+    # 新しいデータ構造: 山札、優先キュー、使用済み、履歴、スナップショット
     return {
         "deck": [], 
         "priority_queue": [],
         "played_cards": [],
         "history": [], 
-        "last_results": []
+        "last_results": [],
+        "snapshot": {}
     }
 
 def save_channel_state(channel_id, state):
@@ -78,7 +88,7 @@ def draw_match(state):
         deck = FULL_DECK.copy()
         random.shuffle(deck)
 
-    # クールダウン対象の履歴（ルールとマップ、完全一致で長さを変える）
+    # クールダウン対象の履歴
     rule_recent = history[-RULE_COOLDOWN:] if len(history) >= RULE_COOLDOWN else history
     map_recent = history[-MAP_COOLDOWN:] if len(history) >= MAP_COOLDOWN else history
     exact_recent = history[-EXACT_COOLDOWN:] if len(history) >= EXACT_COOLDOWN else history
@@ -102,24 +112,17 @@ def draw_match(state):
         selected = extract_valid_card(deck)
 
     # === STEP 3: 詰み（補充タイミング）の処理 ===
-    # 優先キューも山札も全滅（クールダウンで引けない）した場合、捨て札を山札に補充
     if not selected:
-        # 引けなかった山札の残りを優先キューに退避
         priority_queue.extend(deck)
         deck.clear()
-
-        # 捨て札（すでに遊んだカード）を新しい山札としてシャッフル補充
         deck = played_cards.copy()
         random.shuffle(deck)
         played_cards.clear()
-
-        # 補充した状態でもう一度 STEP 1 & 2 を試行
         selected = extract_valid_card(priority_queue)
         if not selected:
             selected = extract_valid_card(deck)
 
-    # === STEP 4: 最終フォールバック（絶対安全装置） ===
-    # 理論上ほぼ起きないが、補充してもクールダウンを満たせない場合の緊急措置
+    # === STEP 4: 最終フォールバック ===
     if not selected:
         if priority_queue:
             selected = priority_queue.pop(0)
@@ -130,16 +133,13 @@ def draw_match(state):
             random.shuffle(deck)
             selected = deck.pop(0)
 
-    # === 状態の更新 ===
-    played_cards.append(selected) # 遊んだカードとして記録
-    history.append(selected)      # クールダウン履歴に追加
+    played_cards.append(selected)
+    history.append(selected)
     
-    # 履歴は最大でも必要なクールダウン値分あれば十分
     max_history_needed = max(MAP_COOLDOWN, RULE_COOLDOWN, EXACT_COOLDOWN)
     if len(history) > max_history_needed:
         history.pop(0)
 
-    # stateに保存し直す
     state["deck"] = deck
     state["priority_queue"] = priority_queue
     state["played_cards"] = played_cards
@@ -150,7 +150,6 @@ def draw_match(state):
 @bot.event
 async def on_ready():
     await tree.sync()
-    # ボットのステータスに「〜をプレイ中」を設定してAIらしさを演出
     activity = discord.Game(name="シミュレーションを監視")
     await bot.change_presence(status=discord.Status.online, activity=activity)
     print(f"🤖 {bot.user.name} がオンラインになりました！")
@@ -163,99 +162,240 @@ async def next(interaction: discord.Interaction, count: int = 1):
         return
 
     channel_id = interaction.channel_id
-    state = load_channel_state(channel_id)
-    
-    results = []
-    for _ in range(count):
-        match = draw_match(state)
-        results.append(match)
+    lock = get_channel_lock(channel_id)
+
+    # ロック取得前に、すでにロック中であれば弾く（連打対策）
+    if lock.locked():
+        await interaction.response.send_message("⏳ 現在、別の要請を処理中です。少し待ってから再度お試しください。", ephemeral=True)
+        return
+
+    # Discordの3秒タイムアウト回避
+    await interaction.response.defer(ephemeral=False)
+
+    try:
+        async with lock:
+            state = load_channel_state(channel_id)
+            
+            # --- スナップショットの作成 (実行前の状態を完全保存) ---
+            state["snapshot"] = {
+                "deck": copy.deepcopy(state.get("deck", [])),
+                "priority_queue": copy.deepcopy(state.get("priority_queue", [])),
+                "played_cards": copy.deepcopy(state.get("played_cards", [])),
+                "history": copy.deepcopy(state.get("history", []))
+            }
+            
+            results = []
+            for _ in range(count):
+                match = draw_match(state)
+                results.append(match)
+                
+            state["last_results"] = results
+            save_channel_state(channel_id, state)
+            remaining = len(state.get("deck", [])) + len(state.get("priority_queue", []))
+
+        msg = f"🛸 **343 Guilty Spark がシミュレーションを選択しました** (残データ: {remaining}/{len(FULL_DECK)})\n"
+        for i, m in enumerate(results):
+            msg += f"\n【第 {i+1} 試合】🗺️ **{m['map']}** |  ⚔️ **{m['rule']}**"
+            
+        await interaction.followup.send(msg)
         
-    state["last_results"] = results
-    save_channel_state(channel_id, state)
-    
-    # 残データは「通常の山札」+「優先キュー」の合計
-    remaining = len(state.get("deck", [])) + len(state.get("priority_queue", []))
-    
-    msg = f"🛸 **343 Guilty Spark がシミュレーションを選択しました** (残データ: {remaining}/{len(FULL_DECK)})\n"
-    for i, m in enumerate(results):
-        msg += f"\n【第 {i+1} 試合】🗺️ **{m['map']}** |  ⚔️ **{m['rule']}**"
-        
-    await interaction.response.send_message(msg)
+    except Exception as e:
+        print(f"Error in /next: {e}")
+        await interaction.followup.send("❌ 処理中にエラーが発生しました。時間を置いて再度お試しください。", ephemeral=True)
+
 
 @tree.command(name="redraw", description="直前のシミュレーションを引き直します")
 async def redraw(interaction: discord.Interaction):
     channel_id = interaction.channel_id
-    state = load_channel_state(channel_id)
-    
-    last_results = state.get("last_results", [])
-    if not last_results:
-        await interaction.response.send_message("❌ 引き直すための直前のシミュレーションデータが見つかりません。", ephemeral=True)
+    lock = get_channel_lock(channel_id)
+
+    if lock.locked():
+        await interaction.response.send_message("⏳ 現在、別の要請を処理中です。少し待ってから再度お試しください。", ephemeral=True)
         return
-        
-    # 1. 直前の選出を「クールダウン履歴」から消去
-    for match in reversed(last_results):
-        if state["history"] and state["history"][-1] == match:
-            state["history"].pop()
+
+    await interaction.response.defer(ephemeral=False)
+
+    try:
+        async with lock:
+            state = load_channel_state(channel_id)
             
-    # 2. 直前の選出を「遊んだカード(played_cards)」から消去し、山札に戻す
-    for match in last_results:
-        if match in state.get("played_cards", []):
-            state["played_cards"].remove(match)
-        state["deck"].append(match)
+            snapshot = state.get("snapshot")
+            last_results = state.get("last_results", [])
+            
+            if not snapshot:
+                await interaction.followup.send("❌ 引き直すためのスナップショットが見つかりません。", ephemeral=True)
+                return
+            if not last_results:
+                await interaction.followup.send("❌ 直前の結果が見つからないため引き直せません。", ephemeral=True)
+                return
+                
+            count = len(last_results)
+            
+            # --- スナップショットの完全復元 ---
+            state["deck"] = copy.deepcopy(snapshot["deck"])
+            state["priority_queue"] = copy.deepcopy(snapshot["priority_queue"])
+            state["played_cards"] = copy.deepcopy(snapshot["played_cards"])
+            state["history"] = copy.deepcopy(snapshot["history"])
+            
+            # 再抽選
+            results = []
+            for _ in range(count):
+                match = draw_match(state)
+                results.append(match)
+                
+            state["last_results"] = results
+            save_channel_state(channel_id, state)
+            remaining = len(state.get("deck", [])) + len(state.get("priority_queue", []))
+            
+        msg = f"🔄 **引き直しました** (残データ: {remaining}/{len(FULL_DECK)})\n"
+        for i, m in enumerate(results):
+            msg += f"\n【第 {i+1} 試合】🗺️ **{m['map']}** |  ⚔️ **{m['rule']}**"
         
-    # 山札をシャッフル
-    random.shuffle(state["deck"])
-    
-    # 引き直し処理
-    count = len(last_results)
-    results = []
-    for _ in range(count):
-        match = draw_match(state)
-        results.append(match)
+        await interaction.followup.send(msg)
         
-    state["last_results"] = results
-    save_channel_state(channel_id, state)
-    
-    remaining = len(state.get("deck", [])) + len(state.get("priority_queue", []))
-    
-    msg = f"🔄 **直前のシミュレーションを山札に戻し、引き直しました** (残データ: {remaining}/{len(FULL_DECK)})\n"
-    for i, m in enumerate(results):
-        msg += f"\n【第 {i+1} 試合】🗺️ **{m['map']}** |  ⚔️ **{m['rule']}**"
-        
-    await interaction.response.send_message(msg)
+    except Exception as e:
+        print(f"Error in /redraw: {e}")
+        await interaction.followup.send("❌ 処理中にエラーが発生しました。時間を置いて再度お試しください。", ephemeral=True)
+
 
 @tree.command(name="reset", description="このチャンネルの山札をリセットして再シャッフルします")
 async def reset(interaction: discord.Interaction):
     channel_id = interaction.channel_id
-    path = f"{DATA_DIR}/{channel_id}.json"
-    if os.path.exists(path):
-        os.remove(path)
-    await interaction.response.send_message("🔄 データインデックスをリフレッシュしました。このチャンネルの山札を再シャッフルします。")
+    lock = get_channel_lock(channel_id)
 
-@tree.command(name="deck", description="現在のインデックスに残っているシミュレーションデータを表示します")
+    if lock.locked():
+        await interaction.response.send_message("⏳ 現在、別の要請を処理中です。少し待ってから再度お試しください。", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=False)
+
+    try:
+        async with lock:
+            path = f"{DATA_DIR}/{channel_id}.json"
+            if os.path.exists(path):
+                os.remove(path)
+                
+        await interaction.followup.send("🔄 データインデックスをリフレッシュしました。このチャンネルの山札を再シャッフルします。")
+        
+    except Exception as e:
+        print(f"Error in /reset: {e}")
+        await interaction.followup.send("❌ 処理中にエラーが発生しました。時間を置いて再度お試しください。", ephemeral=True)
+
+
+@tree.command(name="deck", description="現在のインデックスに残っているシミュレーションデータを表示します(運営用)")
 async def deck(interaction: discord.Interaction):
     channel_id = interaction.channel_id
-    state = load_channel_state(channel_id)
-    
-    # 残っているカード ＝ 通常の山札 ＋ 優先キュー
-    current_cards = state.get("deck", []) + state.get("priority_queue", [])
-    remaining = len(current_cards)
-    
-    if remaining == 0 and not state.get("played_cards", []):
-        cards = FULL_DECK
-        msg = f"🗂️ **現在のインデックスは初期状態です** (残データ: {len(FULL_DECK)}/{len(FULL_DECK)})\n\n"
-    else:
-        cards = current_cards
-        msg = f"🗂️ **現在のインデックスに残存しているシミュレーションデータです** (残データ: {remaining}/{len(FULL_DECK)})\n\n"
-    
-    sorted_cards = sorted(cards, key=lambda c: (c["map"], c["rule"]))
-    lines = []
-    for card in sorted_cards:
-        lines.append(f"・🗺️ **{card['map']}** | ⚔️ **{card['rule']}**")
+    lock = get_channel_lock(channel_id)
+
+    if lock.locked():
+        await interaction.response.send_message("⏳ 現在、別の要請を処理中です。少し待ってから再度お試しください。", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    try:
+        async with lock:
+            state = load_channel_state(channel_id)
+            
+        deck_cards = state.get("deck", [])
+        pq_cards = state.get("priority_queue", [])
         
-    msg += "\n".join(lines)
-    
-    await interaction.response.send_message(msg)
+        # 初期状態チェック
+        if not deck_cards and not pq_cards and not state.get("played_cards", []):
+            deck_cards = FULL_DECK.copy()
+            
+        msg = f"🗂️ **シミュレーションデータ状況**\n"
+        
+        # 山札セクション
+        msg += f"\n📚 **山札 ({len(deck_cards)}枚)**\n"
+        if deck_cards:
+            for c in sorted(deck_cards, key=lambda x: (x["map"], x["rule"])):
+                msg += f"・🗺️ {c['map']} | ⚔️ {c['rule']}\n"
+        else:
+            msg += "なし\n"
+            
+        # 優先キューセクション
+        msg += f"\n⏳ **優先キュー ({len(pq_cards)}枚)**\n"
+        if pq_cards:
+            for c in sorted(pq_cards, key=lambda x: (x["map"], x["rule"])):
+                msg += f"・🗺️ {c['map']} | ⚔️ {c['rule']}\n"
+        else:
+            msg += "なし\n"
+            
+        await interaction.followup.send(msg)
+        
+    except Exception as e:
+        print(f"Error in /deck: {e}")
+        await interaction.followup.send("❌ 処理中にエラーが発生しました。時間を置いて再度お試しください。", ephemeral=True)
+
+
+@tree.command(name="history", description="直近のシミュレーション履歴を表示します(運営用)")
+async def history(interaction: discord.Interaction):
+    channel_id = interaction.channel_id
+    lock = get_channel_lock(channel_id)
+
+    if lock.locked():
+        await interaction.response.send_message("⏳ 現在、別の要請を処理中です。少し待ってから再度お試しください。", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    try:
+        async with lock:
+            state = load_channel_state(channel_id)
+            
+        history_list = state.get("history", [])
+        
+        if not history_list:
+            msg = "📜 **直近のシミュレーション履歴**\n\n履歴がありません。"
+        else:
+            msg = f"📜 **直近 {len(history_list)} 試合の履歴**\n\n"
+            for i, m in enumerate(history_list, 1):
+                msg += f"{i}. 🗺️ **{m['map']}** | ⚔️ **{m['rule']}**\n"
+                
+        await interaction.followup.send(msg)
+        
+    except Exception as e:
+        print(f"Error in /history: {e}")
+        await interaction.followup.send("❌ 処理中にエラーが発生しました。時間を置いて再度お試しください。", ephemeral=True)
+
+
+@tree.command(name="status", description="システムの内部状態(各デッキの残り枚数など)を確認します(運営用)")
+async def status(interaction: discord.Interaction):
+    channel_id = interaction.channel_id
+    lock = get_channel_lock(channel_id)
+
+    if lock.locked():
+        await interaction.response.send_message("⏳ 現在、別の要請を処理中です。少し待ってから再度お試しください。", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    try:
+        async with lock:
+            state = load_channel_state(channel_id)
+            
+        deck_count = len(state.get("deck", []))
+        pq_count = len(state.get("priority_queue", []))
+        played_count = len(state.get("played_cards", []))
+        
+        if deck_count == 0 and pq_count == 0 and played_count == 0:
+            deck_count = len(FULL_DECK)
+            
+        history_count = len(state.get("history", []))
+        
+        msg = "📊 **Guilty Spark 内部ステータス**\n\n"
+        msg += f"📚 山札: **{deck_count}** 枚\n"
+        msg += f"⏳ 優先キュー: **{pq_count}** 枚\n"
+        msg += f"🗑️ トラッシュ(使用済み): **{played_count}** 枚\n\n"
+        msg += f"📜 履歴保持数: **{history_count}** 試合\n"
+        
+        await interaction.followup.send(msg)
+        
+    except Exception as e:
+        print(f"Error in /status: {e}")
+        await interaction.followup.send("❌ 処理中にエラーが発生しました。時間を置いて再度お試しください。", ephemeral=True)
+
 
 # --- Render用 ダミーWebサーバー ---
 def run_dummy_server():
@@ -264,18 +404,12 @@ def run_dummy_server():
             self.send_response(200)
             self.send_header("Content-type", "text/plain; charset=utf-8")
             self.end_headers()
-            self.wfile.write("I am the Monitor of Installation 04. I am functioning normally.".encode("utf-8"))
-
-        def log_message(self, format, *args):
-            return
-
+            self.wfile.write("I am the Monitor of Installation 04.".encode("utf-8"))
     port = int(os.getenv("PORT", 10000))
     server = HTTPServer(("0.0.0.0", port), DummyHandler)
-    print(f"🌐 ダミーWebサーバーをポート {port} で起動しました。")
     server.serve_forever()
 
 if __name__ == "__main__":
     server_thread = threading.Thread(target=run_dummy_server, daemon=True)
     server_thread.start()
-    
     bot.run(TOKEN)
