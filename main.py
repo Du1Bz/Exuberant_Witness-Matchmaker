@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import discord
 from discord import app_commands
 from dotenv import load_dotenv
-from messages import t, cmd_desc, CMD_DESC
+from messages import t, CMD_DESC
 
 # .envファイルから環境変数を読み込む
 load_dotenv()
@@ -42,6 +42,25 @@ def get_channel_lock(channel_id: int) -> asyncio.Lock:
 intents = discord.Intents.default()
 bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(bot)
+
+
+# =============================================================================
+# 翻訳機能 (Translator)
+# =============================================================================
+
+class GuiltySparkTranslator(app_commands.Translator):
+    async def translate(
+        self, 
+        string: app_commands.locale_str, 
+        locale: discord.Locale, 
+        context: app_commands.TranslationContext
+    ) -> str | None:
+        """Discordがコマンドを各ユーザーの言語設定で表示する際に自動で呼び出される。"""
+        lang = "ja" if locale == discord.Locale.japanese else "en"
+        key = string.message
+        if key in CMD_DESC:
+            return CMD_DESC[key].get(lang, CMD_DESC[key]["en"])
+        return None
 
 
 # =============================================================================
@@ -191,10 +210,15 @@ async def _check_busy(interaction: discord.Interaction, lock: asyncio.Lock) -> b
 
 @bot.event
 async def on_ready():
+    # 翻訳クラスをCommandTreeに登録してコマンドを同期
+    await tree.set_translator(GuiltySparkTranslator())
     await tree.sync()
+    
+    # 英語（デフォルト）のステータス表示を取得して設定
+    activity_name = t(discord.Locale.american_english, "activity")
     await bot.change_presence(
         status=discord.Status.online,
-        activity=discord.Game(name=CMD_DESC["activity"]["en"]),
+        activity=discord.Game(name=activity_name),
     )
     print(t(discord.Locale.japanese, "on_ready_log", name=bot.user.name))
 
@@ -205,10 +229,9 @@ async def on_ready():
 
 @tree.command(
     name="next",
-    description=CMD_DESC["next"]["en"],
-    description_localizations=cmd_desc("next"),
+    description=app_commands.locale_str("next"),
 )
-@app_commands.describe(count=CMD_DESC["next.count"]["en"])
+@app_commands.describe(count=app_commands.locale_str("next.count"))
 @app_commands.rename(count="count")
 async def cmd_next(interaction: discord.Interaction, count: int = 1):
     locale = interaction.locale
@@ -256,8 +279,7 @@ async def cmd_next(interaction: discord.Interaction, count: int = 1):
 
 @tree.command(
     name="redraw",
-    description=CMD_DESC["redraw"]["en"],
-    description_localizations=cmd_desc("redraw"),
+    description=app_commands.locale_str("redraw"),
 )
 async def cmd_redraw(interaction: discord.Interaction):
     locale = interaction.locale
@@ -309,8 +331,7 @@ async def cmd_redraw(interaction: discord.Interaction):
 
 @tree.command(
     name="reset",
-    description=CMD_DESC["reset"]["en"],
-    description_localizations=cmd_desc("reset"),
+    description=app_commands.locale_str("reset"),
 )
 async def cmd_reset(interaction: discord.Interaction):
     locale = interaction.locale
@@ -337,8 +358,7 @@ async def cmd_reset(interaction: discord.Interaction):
 
 @tree.command(
     name="deck",
-    description=CMD_DESC["deck"]["en"],
-    description_localizations=cmd_desc("deck"),
+    description=app_commands.locale_str("deck"),
 )
 async def cmd_deck(interaction: discord.Interaction):
     locale = interaction.locale
@@ -384,8 +404,7 @@ async def cmd_deck(interaction: discord.Interaction):
 
 @tree.command(
     name="history",
-    description=CMD_DESC["history"]["en"],
-    description_localizations=cmd_desc("history"),
+    description=app_commands.locale_str("history"),
 )
 async def cmd_history(interaction: discord.Interaction):
     locale = interaction.locale
@@ -418,8 +437,7 @@ async def cmd_history(interaction: discord.Interaction):
 
 @tree.command(
     name="status",
-    description=CMD_DESC["status"]["en"],
-    description_localizations=cmd_desc("status"),
+    description=app_commands.locale_str("status"),
 )
 async def cmd_status(interaction: discord.Interaction):
     locale = interaction.locale

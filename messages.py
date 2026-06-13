@@ -6,7 +6,7 @@ def get_lang(locale: discord.Locale) -> str:
     return "ja" if locale == discord.Locale.japanese else "en"
 
 # =============================================================================
-# コマンド説明文（description_localizations 用）
+# コマンド説明文（Translator 用）
 # キー = コマンド名またはパラメータ名
 # =============================================================================
 CMD_DESC = {
@@ -40,18 +40,14 @@ CMD_DESC = {
     },
 }
 
-def cmd_desc(key: str) -> dict:
-    """description_localizations に渡す {locale_str: text} dict を返す。"""
-    return {"ja": CMD_DESC[key]["ja"]}
-
 # =============================================================================
 # レスポンスメッセージ
 # =============================================================================
 _MSG = {
     # /next
     "next_header": {
-        "en": "🛸 **343 Guilty Spark has selected a simulation** (remaining: {remaining}/{total})",
-        "ja": "🛸 **343 Guilty Spark がシミュレーションを選択しました** (残データ: {remaining}/{total})",
+        "en": "🛸 **Guilty Spark has selected a simulation** (remaining: {remaining}/{total})",
+        "ja": "🛸 **Guilty Spark がシミュレーションを選択しました** (残データ: {remaining}/{total})",
     },
     "match_line": {
         "en": "\n[Match {i}] 🗺️ **{map}** | ⚔️ **{rule}**",
@@ -137,8 +133,8 @@ _MSG = {
     },
     # on_ready
     "activity": {
-        "en": "Monitoring simulations",
-        "ja": "シミュレーションを監視",
+        "en": "Selecting Maps & Modes",
+        "ja": "マップ＆モードを選出中",
     },
     "on_ready_log": {
         "en": "🤖 {name} is now online!",
