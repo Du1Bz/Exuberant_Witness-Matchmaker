@@ -65,7 +65,7 @@ Halo Infinite ランクアリーナのマップ＆ルールの組み合わせを
 
 ## 導入リンク
 
-**[Guilty Spark をサーバーに追加する](https://discord.com/oauth2/authorize?client_id=1514278490818609162&permissions=67584&integration_type=0&scope=bot)**
+**[Guilty Spark をサーバーに追加する](https://discord.com/oauth2/authorize?client_id=1514278490818609162&permissions=2048&integration_type=0&scope=bot)**
 
 ---
 
