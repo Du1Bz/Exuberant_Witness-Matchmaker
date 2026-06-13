@@ -28,7 +28,8 @@ Guilty Spark shuffles map & rule combinations into a deck and draws from the top
 | `/deck` | Show combinations remaining in the current deck (alphabetical order). |
 | `/history` | Show recently played combinations (admin). |
 | `/status` | Show internal deck state — card counts per zone (admin). |
-
+  
+> 💡 **Tip:** Thanks to Discord's autocomplete, you can simply type `/next 3` and press Enter to draw multiple matches quickly without clicking the parameter.
 ---
 
 ## How the Deck System Works
