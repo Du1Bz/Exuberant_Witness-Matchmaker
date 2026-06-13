@@ -1,51 +1,68 @@
-#　Guilty Spark - Halo Infinite カスタムマッチセレクター
+# Guilty Spark — Halo Infinite Custom Match Selector
 
-ランクアリーナのマップ＆ルールの組み合わせを、山札方式で重複なくランダム選出するDiscord Botです。
+A Discord Bot that randomly selects map & rule combinations for Halo Infinite ranked arena custom matches using a deck system.
 
----
-
-## このBotでできること
-
-ランクアリーナのマップ＆ルールの組み合わせを、**山札方式**で重複なくランダム選出します。  
-22種類のマップ×ルールの組み合わせのカードをシャッフルして上から引いていきます。  
-山札が無くなったら自動で新しい山札を作成して続きを出力します。
-
-- 直近5試合に出た組み合わせ（山札の切り替わり時に発生）や、前戦と同じマップor同じルール（Slayer連戦など）は山札に戻してもう一度引きます。
-- 24時間いつでも即答します。
-- 山札は**チャンネルごとに管理**されるため、複数のカスタム部屋で同時に使うことができます。
-- 山札形式のため、22種類のランクアリーナのゲームを**1周としてバランスよく**プレイできます。
+> 日本語版は [README_ja.md](README_ja.md) をご覧ください。
 
 ---
 
-## コマンド一覧
+## What It Does
 
-| コマンド | 説明 |
-|---------|------|
-| `/next` | 次の試合の組み合わせを1つ選出します（残り枚数も表示）。 |
-| `/next count:3` | 指定した数（1〜5）だけまとめて選出します。 |
-| `/redraw` | 直前の結果を山札に戻し、同じ数だけ引き直します。 |
-| `/reset` | 現在の山札データを初期化し、新品の22枚に再シャッフルします。 |
-| `/deck` | 現在の山札に残っているゲームモードをアルファベット順で表示します。 |
+Guilty Spark shuffles map & rule combinations into a deck and draws from the top. Instead of pure RNG, it uses a smart algorithm to prevent repetitive matches.
+
+- **Cooldown logic** prevents back-to-back duplicates: same map (last 4 matches), same rule type (last 3 matches), and exact same combination (last 7 matches) are automatically blocked.
+- **Priority Queue System**: If all remaining cards in the deck are blocked by cooldowns (a dead end), they are temporarily moved to the Priority Queue. The trash pile is then reshuffled into a new deck to keep the games rolling. Cards in the Priority Queue will be drawn first as soon as their cooldowns expire.
+- **Per-channel decks** allow multiple custom lobbies to run simultaneously without interfering with each other.
+- Available 24/7 with instant responses.
 
 ---
 
-## サーバー管理者向け設定
+## Commands
 
-### 権限制御について（オプション）
+| Command | Description |
+|---------|-------------|
+| `/next` | Draw the next match combination (remaining count shown). |
+| `/next count:3` | Draw multiple combinations at once (1–5). |
+| `/redraw` | Return the previous draw to the deck and draw again. |
+| `/reset` | Reset the deck and reshuffle all 22 cards. |
+| `/deck` | Show combinations remaining in the current deck (alphabetical order). |
+| `/history` | Show recently played combinations (admin). |
+| `/status` | Show internal deck state — card counts per zone (admin). |
 
-初期設定は**全員が使用可能**な状態です。必要に応じて、特定のロールを持つメンバーのみがコマンドを使えるように制限できます。
-> **補足:** 管理者は全ての条件を無視してコマンドを使用することができます。
+---
 
-**制限をかける場合の手順:**
+## How the Deck System Works
 
-1. ロールを作成する(例:カスタムホスト)
-2. Discordサーバー設定 → **連携サービス** → **Guilty Spark** の管理を開く
-3. 「コマンド権限」の「ロールまたはメンバーの追加」を押す
-4. 作成したロールを選択して追加を押す
-5. デフォルトでは **@everyone** にチェックが入っているため、 **✖** を押す
-6. これで**カスタムホスト** ロールを付与されたユーザーのみがguilty-sparkのコマンドを呼び出せるようになります。
+```text
+[ Priority Queue ] ──(Drawn first when valid)──┐
+        ▲                                      │
+        │ (If stuck)                           ▼
+    [ Deck ] ─────────draw─────────▶ [ Selected ] ──▶ [ Trash ]
+        ▲                                                 │
+        │                                                 │
+        └────────────(Reshuffle to replenish)─────────────┘
+```
 
-> **補足:** 必要であれば上記の手順でいつでも制限をかけられます。
+Normally, cards are drawn from the Deck. If every remaining card in the deck violates a cooldown rule, those cards are shifted to the Priority Queue, and the Trash is reshuffled into a new deck. Cards in the Priority Queue take precedence and will be drawn as soon as they become valid again.
+---
 
-## 【導入URL】
-https://discord.com/oauth2/authorize?client_id=1514278490818609162&permissions=67584&integration_type=0&scope=bot
+## Server Setup
+
+### Permissions (Optional)
+
+By default, all server members can use every command. To restrict commands to specific roles:
+
+1. Create a role (e.g. `Custom Host`).
+2. Go to **Server Settings → Integrations → Guilty Spark**.
+3. Under **Command Permissions**, click **Add roles or members**.
+4. Select the role you created.
+5. Click the **✖** next to **@everyone** to remove default access.
+6. Only members with the `Custom Host` role can now use Guilty Spark commands.
+
+> Server administrators can always use all commands regardless of restrictions.
+
+---
+
+## Add to Your Server
+
+**[Click here to invite Guilty Spark](https://discord.com/oauth2/authorize?client_id=1514278490818609162&permissions=67584&integration_type=0&scope=bot)**
