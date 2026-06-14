@@ -134,11 +134,11 @@ def get_cooldown_remaining(card: dict, history: list) -> tuple[int, int, int]:
 
     for i, h in enumerate(reversed(history), 1):
         if map_rem == 0 and card["map"] == h["map"]:
-            map_rem = max(0, MAP_COOLDOWN - i)
+            map_rem = max(0, MAP_COOLDOWN - i+ 1)
         if rule_rem == 0 and card_rule_base == get_base_rule(h["rule"]):
-            rule_rem = max(0, RULE_COOLDOWN - i)
+            rule_rem = max(0, RULE_COOLDOWN - i+ 1)
         if exact_rem == 0 and card["map"] == h["map"] and card["rule"] == h["rule"]:
-            exact_rem = max(0, EXACT_COOLDOWN - i)
+            exact_rem = max(0, EXACT_COOLDOWN - i+ 1)
         if map_rem > 0 and rule_rem > 0 and exact_rem > 0:
             break
     return map_rem, rule_rem, exact_rem
