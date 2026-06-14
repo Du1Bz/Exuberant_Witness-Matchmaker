@@ -321,6 +321,9 @@ async def cmd_redraw(interaction: discord.Interaction):
             state["played_cards"]   = copy.deepcopy(snapshot["played_cards"])
             state["history"]        = copy.deepcopy(snapshot["history"])
 
+            # 山札をシャッフルしないと復元→再抽選で同じ並びになり結果が一致する
+            random.shuffle(state["deck"])
+
             results = [draw_match(state) for _ in range(len(last_results))]
             state["last_results"] = results
             save_channel_state(channel_id, state)

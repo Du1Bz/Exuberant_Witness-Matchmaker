@@ -8,6 +8,8 @@ A Discord Bot that randomly selects map & rule combinations for Halo Infinite ra
 
 ## What It Does
 
+![Screenshot](images/screenshot.png)
+
 Exuberant Witness shuffles map & rule combinations into a deck and draws from the top. Instead of pure RNG, it uses a smart algorithm to prevent repetitive matches.
 
 - **Cooldown logic** prevents back-to-back duplicates: same map (last 4 matches), same rule type (last 3 matches), and exact same combination (last 7 matches) are automatically blocked.
