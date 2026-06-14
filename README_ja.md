@@ -1,4 +1,4 @@
-# Guilty Spark — Halo Infinite カスタムマッチセレクター
+# Exuberant Witness - Matchmaker — Halo Infinite カスタムマッチセレクター
 
 Halo Infinite ランクアリーナのマップ＆ルールの組み合わせを、山札方式で重複なくランダム選出する Discord Bot です。
 > For English, see [README.md](README.md).
@@ -27,8 +27,9 @@ Halo Infinite ランクアリーナのマップ＆ルールの組み合わせを
 | `/deck` | 現在の山札に残っている組み合わせをアルファベット順で表示します。 |
 | `/history` | 直近の選出履歴を表示します（運営用）。 |
 | `/status` | 山札・優先キュー・トラッシュの枚数など内部状態を表示します（運営用）。 |
-  
-> 💡 **Tip:** Discordの補完機能により、`/next count:3` はチャット欄に `/next 3` と直接タイプしてEnterを押すだけでも素早く実行できます。
+
+> 💡 **ヒント:** Discordの補完機能により、`/next 3` と入力して Enter を押すだけで複数試合をまとめて選出できます。
+
 ---
 
 ## 山札システムの仕組み
@@ -54,7 +55,7 @@ Halo Infinite ランクアリーナのマップ＆ルールの組み合わせを
 初期設定では**全員がコマンドを使用可能**です。特定のロールのみに制限する場合は以下の手順で設定できます。
 
 1. ロールを作成する（例：`カスタムホスト`）。
-2. サーバー設定 → **連携サービス** → **Guilty Spark** の管理を開く。
+2. サーバー設定 → **連携サービス** → **Exuberant Witness** の管理を開く。
 3. 「コマンド権限」の「ロールまたはメンバーの追加」をクリック。
 4. 作成したロールを選択して追加する。
 5. デフォルトの **@everyone** の **✖** を押して除外する。
@@ -66,7 +67,7 @@ Halo Infinite ランクアリーナのマップ＆ルールの組み合わせを
 
 ## 導入リンク
 
-**[Guilty Spark をサーバーに追加する](https://discord.com/oauth2/authorize?client_id=1514278490818609162&permissions=2048&integration_type=0&scope=bot)**
+**[Exuberant Witness をサーバーに追加する](https://discord.com/oauth2/authorize?client_id=1514278490818609162&permissions=2048&integration_type=0&scope=bot)**
 
 ---
 

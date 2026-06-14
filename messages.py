@@ -46,8 +46,8 @@ CMD_DESC = {
 _MSG = {
     # /next
     "next_header": {
-        "en": "🛸 **Guilty Spark has selected a simulation** (remaining: {remaining}/{total})",
-        "ja": "🛸 **Guilty Spark がシミュレーションを選択しました** (残データ: {remaining}/{total})",
+        "en": "🛸 **Exuberant Witness has selected a simulation** (remaining: {remaining}/{total})",
+        "ja": "🛸 **Exuberant Witness がシミュレーションを選択しました** (残データ: {remaining}/{total})",
     },
     "match_line": {
         "en": "\n[Match {i}] 🗺️ **{map}** | ⚔️ **{rule}**",
@@ -91,8 +91,8 @@ _MSG = {
     },
     # /status
     "status_header": {
-        "en": "📊 **Guilty Spark Internal Status**\n\n",
-        "ja": "📊 **Guilty Spark 内部ステータス**\n\n",
+        "en": "📊 **Exuberant Witness Internal Status**\n\n",
+        "ja": "📊 **Exuberant Witness 内部ステータス**\n\n",
     },
     "status_deck": {
         "en": "📚 Deck: **{count}** cards\n",
