@@ -56,6 +56,14 @@ class GuiltySparkTranslator(app_commands.Translator):
         context: app_commands.TranslationContext
     ) -> str | None:
         """Discordがコマンドを各ユーザーの言語設定で表示する際に自動で呼び出される。"""
+        
+        # 👇 修正箇所: コマンド「名」やパラメータ「名」の翻訳リクエストはスキップ（正規表現エラー対策）
+        if context.location in (
+            app_commands.TranslationContextLocation.command_name,
+            app_commands.TranslationContextLocation.parameter_name
+        ):
+            return None
+
         lang = "ja" if locale == discord.Locale.japanese else "en"
         key = string.message
         if key in CMD_DESC:
@@ -485,7 +493,7 @@ def run_dummy_server():
             self.send_response(200)
             self.send_header("Content-type", "text/plain; charset=utf-8")
             self.end_headers()
-            self.wfile.write(b"I am the Monitor of Installation 04.")
+            self.wfile.write(b"I am 031 Exuberant Witness. The matchmaker is online.")
 
         def log_message(self, format, *args):
             pass  # アクセスログを抑制
