@@ -125,6 +125,24 @@ def is_exact_on_cooldown(card: dict, recent_history: list) -> bool:
     return any(card["map"] == h["map"] and card["rule"] == h["rule"]
                for h in recent_history)
 
+def get_cooldown_remaining(card: dict, history: list) -> tuple[int, int, int]:
+    """カードの各クールダウン残り試合数を返す (map_rem, rule_rem, exact_rem)"""
+    map_rem = 0
+    rule_rem = 0
+    exact_rem = 0
+    card_rule_base = get_base_rule(card["rule"])
+
+    for i, h in enumerate(reversed(history), 1):
+        if map_rem == 0 and card["map"] == h["map"]:
+            map_rem = max(0, MAP_COOLDOWN - i)
+        if rule_rem == 0 and card_rule_base == get_base_rule(h["rule"]):
+            rule_rem = max(0, RULE_COOLDOWN - i)
+        if exact_rem == 0 and card["map"] == h["map"] and card["rule"] == h["rule"]:
+            exact_rem = max(0, EXACT_COOLDOWN - i)
+        if map_rem > 0 and rule_rem > 0 and exact_rem > 0:
+            break
+    return map_rem, rule_rem, exact_rem
+
 def draw_match(state: dict) -> dict:
     deck         = state.get("deck", [])
     priority_queue = state.get("priority_queue", [])
@@ -391,18 +409,29 @@ async def cmd_deck(interaction: discord.Interaction):
             if not deck_cards and not pq_cards and not state.get("played_cards", []):
                 deck_cards = FULL_DECK.copy()
 
+            history = state.get("history", [])
             msg  = t(locale, "deck_header") + "\n"
             msg += t(locale, "deck_section", count=len(deck_cards))
             if deck_cards:
                 for c in sorted(deck_cards, key=lambda x: (x["map"], x["rule"])):
-                    msg += f"・🗺️ {c['map']} | ⚔️ {c['rule']}\n"
+                    if history:
+                        m, r, e = get_cooldown_remaining(c, history)
+                        cd = f" (🚫🗺️{m} ⚔️{r} 🔁{e})" if m > 0 or r > 0 or e > 0 else " ✅"
+                    else:
+                        cd = ""
+                    msg += f"・🗺️ {c['map']} | ⚔️ {c['rule']}{cd}\n"
             else:
                 msg += t(locale, "none")
 
             msg += t(locale, "pq_section", count=len(pq_cards))
             if pq_cards:
                 for c in sorted(pq_cards, key=lambda x: (x["map"], x["rule"])):
-                    msg += f"・🗺️ {c['map']} | ⚔️ {c['rule']}\n"
+                    if history:
+                        m, r, e = get_cooldown_remaining(c, history)
+                        cd = f" (🚫🗺️{m} ⚔️{r} 🔁{e})" if m > 0 or r > 0 or e > 0 else " ✅"
+                    else:
+                        cd = ""
+                    msg += f"・🗺️ {c['map']} | ⚔️ {c['rule']}{cd}\n"
             else:
                 msg += t(locale, "none")
 
