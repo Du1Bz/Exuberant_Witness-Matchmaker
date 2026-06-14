@@ -7,7 +7,7 @@ Halo Infinite ランクアリーナのマップ＆ルールの組み合わせを
 
 ## できること
 
-![Screenshot](images/screenshot.png)
+<video src="images/demo.mp4" controls width="100%"></video>
 
 ランクアリーナのマップ×ルールの組み合わせをシャッフルして山札から引いていきます。完全なランダムではなく、偏りを防ぐ独自のアルゴリズムを採用しています。
 
