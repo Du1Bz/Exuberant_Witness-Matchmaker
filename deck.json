@@ -1,5 +1,7 @@
 [
+  { "map": "Argyle",    "rule": "CTF_3cap" },
   { "map": "Aquarius",  "rule": "CTF_5cap" },
+  { "map": "Catalyst",  "rule": "CTF_3cap" },
   { "map": "Empyrean",  "rule": "CTF_3cap" },
   { "map": "Fortress",  "rule": "CTF_3cap" },
   { "map": "Lattice",   "rule": "King of the Hill" },
@@ -16,8 +18,10 @@
   { "map": "Recharge",  "rule": "Strongholds" },
   { "map": "Solitude",  "rule": "King of the Hill" },
   { "map": "Solitude",  "rule": "Slayer" },
+  { "map": "Streets",   "rule": "King of the Hill" },
   { "map": "Streets",   "rule": "Oddball" },
   { "map": "Streets",   "rule": "Slayer" },
+  { "map": "Streets",   "rule": "Strongholds" },
   { "map": "Vacancy",   "rule": "King of the Hill" },
   { "map": "Vacancy",   "rule": "Oddball" },
   { "map": "Vacancy",   "rule": "Slayer" }
