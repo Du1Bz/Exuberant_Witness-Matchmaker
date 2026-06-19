@@ -5,6 +5,7 @@ import threading
 import copy
 import asyncio
 import tempfile
+from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import discord
 from discord import app_commands
@@ -24,11 +25,11 @@ os.makedirs(DATA_DIR, exist_ok=True)
 with open("deck.json", "r", encoding="utf-8") as f:
     FULL_DECK = json.load(f)
 
-# === クールダウン設定 ===
-RULE_COOLDOWN  = 3   # 直近N試合、同じルールベースをブロック
-MAP_COOLDOWN   = 4   # 直近N試合、同じマップをブロック
-EXACT_COOLDOWN = 7   # 直近N試合、まったく同じマップ・ルールの組み合わせをブロック
-# 注意: EXACT_COOLDOWN を変更したら history の保持上限も連動して変わる（draw_match 参照）
+# === プレイリスト表示名 ===
+PL_NAMES = {
+    "ranked_arena": "Ranked Arena",
+    "ga": "GA(Gentleman's Agreement)"
+}
 
 # === 排他制御（同時実行の競合対策） ===
 channel_locks: dict[int, asyncio.Lock] = {}
@@ -45,6 +46,30 @@ tree = app_commands.CommandTree(bot)
 
 
 # =============================================================================
+# ヘルパー関数
+# =============================================================================
+
+def get_jst_time_str(iso_str: str, locale: discord.Locale) -> str:
+    if not iso_str:
+        return t(locale, "never_played")
+    try:
+        dt = datetime.fromisoformat(iso_str)
+        jst = dt.astimezone(timezone(timedelta(hours=9)))
+        return jst.strftime("%Y/%m/%d %H:%M")
+    except:
+        return t(locale, "never_played")
+
+def get_total_active_cards(settings: dict, cards: list) -> int:
+    active_slayer_count = settings.get("active_slayer_count")
+    all_slayers = sum(1 for c in cards if c["rule"] == "Slayer")
+    if active_slayer_count is not None:
+        excluded_count = max(0, all_slayers - active_slayer_count)
+    else:
+        excluded_count = 0
+    return len(cards) - excluded_count
+
+
+# =============================================================================
 # 翻訳機能 (Translator)
 # =============================================================================
 
@@ -55,9 +80,6 @@ class GuiltySparkTranslator(app_commands.Translator):
         locale: discord.Locale, 
         context: app_commands.TranslationContext
     ) -> str | None:
-        """Discordがコマンドを各ユーザーの言語設定で表示する際に自動で呼び出される。"""
-        
-        # 👇 修正箇所: コマンド「名」やパラメータ「名」の翻訳リクエストはスキップ（正規表現エラー対策）
         if context.location in (
             app_commands.TranslationContextLocation.command_name,
             app_commands.TranslationContextLocation.parameter_name
@@ -75,27 +97,45 @@ class GuiltySparkTranslator(app_commands.Translator):
 # 状態管理
 # =============================================================================
 
-def load_channel_state(channel_id: int) -> dict:
-    path = f"{DATA_DIR}/{channel_id}.json"
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
-            state = json.load(f)
-        # 古いデータ構造からのマイグレーション用
-        state.setdefault("priority_queue", [])
-        state.setdefault("played_cards", [])
-        return state
-
+def get_initial_playlist_state() -> dict:
     return {
         "deck":           [],
         "priority_queue": [],
         "played_cards":   [],
         "history":        [],
+        "slayer_pool":    [],
+        "snapshots":      [],
+        "snapshot_counter": 0,
         "last_results":   [],
-        "snapshot":       {},
+        "last_played_at": None,
     }
 
+def load_channel_state(channel_id: int) -> dict:
+    path = f"{DATA_DIR}/{channel_id}.json"
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            state = json.load(f)
+        
+        # 古いデータ構造（playlistsキーを持たない単一デッキ構造）はリセットして作り直す
+        if "playlists" not in state:
+            state = {
+                "current_playlist": "ranked_arena",
+                "playlists": {}
+            }
+    else:
+        state = {
+            "current_playlist": "ranked_arena",
+            "playlists": {}
+        }
+    
+    # 欠落しているプレイリストがあれば初期状態を埋める
+    for pl_key in FULL_DECK.keys():
+        if pl_key not in state["playlists"]:
+            state["playlists"][pl_key] = get_initial_playlist_state()
+            
+    return state
+
 def save_channel_state(channel_id: int, state: dict) -> None:
-    """アトミック書き込み: 一時ファイルに書いてから os.replace() で置換する。"""
     path = f"{DATA_DIR}/{channel_id}.json"
     dir_ = os.path.dirname(os.path.abspath(path))
     with tempfile.NamedTemporaryFile("w", dir=dir_, delete=False,
@@ -104,13 +144,44 @@ def save_channel_state(channel_id: int, state: dict) -> None:
         tmp_path = tmp.name
     os.replace(tmp_path, path)
 
+def create_snapshot(pl_state: dict) -> int:
+    """現在の状態のスナップショットを作成し、そのIDを返す"""
+    pl_state["snapshot_counter"] = pl_state.get("snapshot_counter", 0) + 1
+    snap_id = pl_state["snapshot_counter"]
+    
+    snap_data = {
+        "deck":           copy.deepcopy(pl_state.get("deck", [])),
+        "priority_queue": copy.deepcopy(pl_state.get("priority_queue", [])),
+        "played_cards":   copy.deepcopy(pl_state.get("played_cards", [])),
+        "history":        copy.deepcopy(pl_state.get("history", [])),
+        "slayer_pool":    copy.deepcopy(pl_state.get("slayer_pool", [])),
+    }
+    
+    snapshots = pl_state.get("snapshots", [])
+    snapshots.append({"id": snap_id, "state": snap_data})
+    
+    # 直近50件を保持
+    if len(snapshots) > 50:
+        snapshots.pop(0)
+        
+    pl_state["snapshots"] = snapshots
+    return snap_id
+
+def restore_snapshot(pl_state: dict, snap_state: dict) -> None:
+    """スナップショットの状態を復元し、山札をシャッフルする"""
+    pl_state["deck"]           = copy.deepcopy(snap_state["deck"])
+    pl_state["priority_queue"] = copy.deepcopy(snap_state["priority_queue"])
+    pl_state["played_cards"]   = copy.deepcopy(snap_state["played_cards"])
+    pl_state["history"]        = copy.deepcopy(snap_state["history"])
+    pl_state["slayer_pool"]    = copy.deepcopy(snap_state["slayer_pool"])
+    random.shuffle(pl_state["deck"])
+
 
 # =============================================================================
 # カード抽選ロジック
 # =============================================================================
 
 def get_base_rule(rule_name: str) -> str:
-    """CTF_3cap と CTF_5cap を同じ 'CTF' として統合判定するためのヘルパー。"""
     return "CTF" if rule_name.startswith("CTF") else rule_name
 
 def is_rule_on_cooldown(card: dict, recent_history: list) -> bool:
@@ -121,97 +192,145 @@ def is_map_on_cooldown(card: dict, recent_history: list) -> bool:
     return any(card["map"] == h["map"] for h in recent_history)
 
 def is_exact_on_cooldown(card: dict, recent_history: list) -> bool:
-    """deck.json にフィールドが追加されても壊れないよう、map と rule だけで比較する。"""
     return any(card["map"] == h["map"] and card["rule"] == h["rule"]
                for h in recent_history)
 
-def get_cooldown_remaining(card: dict, history: list) -> tuple[int, int, int]:
-    """カードの各クールダウン残り試合数を返す (map_rem, rule_rem, exact_rem)"""
+def get_cooldown_remaining(card: dict, history: list, settings: dict) -> tuple[int, int, int]:
     map_rem = 0
     rule_rem = 0
     exact_rem = 0
     card_rule_base = get_base_rule(card["rule"])
 
+    map_cd = settings.get("map_cooldown") or 0
+    rule_cd = settings.get("rule_cooldown") or 0
+    exact_cd = settings.get("exact_cooldown") or 0
+
     for i, h in enumerate(reversed(history), 1):
         if map_rem == 0 and card["map"] == h["map"]:
-            map_rem = max(0, MAP_COOLDOWN - i+ 1)
+            map_rem = max(0, map_cd - i + 1)
         if rule_rem == 0 and card_rule_base == get_base_rule(h["rule"]):
-            rule_rem = max(0, RULE_COOLDOWN - i+ 1)
+            rule_rem = max(0, rule_cd - i + 1)
         if exact_rem == 0 and card["map"] == h["map"] and card["rule"] == h["rule"]:
-            exact_rem = max(0, EXACT_COOLDOWN - i+ 1)
+            exact_rem = max(0, exact_cd - i + 1)
         if map_rem > 0 and rule_rem > 0 and exact_rem > 0:
             break
     return map_rem, rule_rem, exact_rem
 
-def draw_match(state: dict) -> dict:
-    deck         = state.get("deck", [])
-    priority_queue = state.get("priority_queue", [])
-    played_cards = state.get("played_cards", [])
-    history      = state.get("history", [])
+def draw_match(pl_state: dict, settings: dict, all_cards: list) -> dict:
+    deck           = pl_state.get("deck", [])
+    priority_queue = pl_state.get("priority_queue", [])
+    played_cards   = pl_state.get("played_cards", [])
+    history        = pl_state.get("history", [])
+    slayer_pool    = pl_state.get("slayer_pool", [])
+
+    rule_cd = settings.get("rule_cooldown")
+    map_cd  = settings.get("map_cooldown")
+    exact_cd= settings.get("exact_cooldown")
+    active_slayer_count = settings.get("active_slayer_count")
 
     # 初期化: すべて空っぽなら新品の山札を作る
     if not deck and not priority_queue and not played_cards:
-        deck = FULL_DECK.copy()
+        all_slayers = [c for c in all_cards if c["rule"] == "Slayer"]
+        random.shuffle(all_slayers)
+        
+        if active_slayer_count is not None:
+            chosen_slayers = all_slayers[:active_slayer_count]
+            slayer_pool    = all_slayers[active_slayer_count:]
+        else:
+            chosen_slayers = all_slayers
+            slayer_pool    = []
+
+        all_objectives = [c for c in all_cards if c["rule"] != "Slayer"]
+        deck = all_objectives + chosen_slayers
         random.shuffle(deck)
 
     # クールダウン対象の履歴スライス
-    rule_recent  = history[-RULE_COOLDOWN:]
-    map_recent   = history[-MAP_COOLDOWN:]
-    exact_recent = history[-EXACT_COOLDOWN:]
+    rule_recent  = history[-rule_cd:] if rule_cd else []
+    map_recent   = history[-map_cd:] if map_cd else []
+    exact_recent = history[-exact_cd:] if exact_cd else []
 
     def extract_valid_card(card_list: list) -> dict | None:
-        """リストの中からクールダウン条件を満たす最初のカードを引き抜く。"""
-        for i, card in enumerate(card_list):
-            if (not is_map_on_cooldown(card, map_recent)
-                    and not is_rule_on_cooldown(card, rule_recent)
-                    and not is_exact_on_cooldown(card, exact_recent)):
-                return card_list.pop(i)
+        valid_idx = next(
+            (i for i, card in enumerate(card_list)
+             if not (map_cd and is_map_on_cooldown(card, map_recent))
+             and not (rule_cd and is_rule_on_cooldown(card, rule_recent))
+             and not (exact_cd and is_exact_on_cooldown(card, exact_recent))),
+            None
+        )
+        if valid_idx is not None:
+            return card_list.pop(valid_idx)
         return None
 
-    selected = None
-
-    # === STEP 1: 優先キュー（前回引けなかったカード）から最優先で探す ===
-    selected = extract_valid_card(priority_queue)
-
-    # === STEP 2: 通常の山札から探す ===
-    if not selected:
-        selected = extract_valid_card(deck)
+    # === STEP 1 & 2: 優先キューまたは山札から引く ===
+    selected = extract_valid_card(priority_queue) or extract_valid_card(deck)
 
     # === STEP 3: 詰み（補充タイミング）の処理 ===
     if not selected:
         priority_queue.extend(deck)
         deck.clear()
-        deck = played_cards.copy()
+        
+        recycled_objectives = [c for c in played_cards if c["rule"] != "Slayer"]
+        played_slayers      = [c for c in played_cards if c["rule"] == "Slayer"]
+        
+        if active_slayer_count is not None:
+            pq_slayer_count = sum(1 for c in priority_queue if c["rule"] == "Slayer")
+            needed_slayer_count = max(0, active_slayer_count - pq_slayer_count)
+            slayer_candidates = list(slayer_pool) + list(played_slayers)
+            chosen_slayers = slayer_candidates[:needed_slayer_count]
+            slayer_pool    = slayer_candidates[needed_slayer_count:]
+        else:
+            chosen_slayers = list(slayer_pool) + list(played_slayers)
+            slayer_pool = []
+        
+        deck = recycled_objectives + chosen_slayers
         random.shuffle(deck)
         played_cards.clear()
-        selected = extract_valid_card(priority_queue)
-        if not selected:
-            selected = extract_valid_card(deck)
 
-    # === STEP 4: 最終フォールバック ===
+        selected = extract_valid_card(priority_queue) or extract_valid_card(deck)
+
+    # === STEP 4: クールダウンを段階的に緩めて再試行 ===
     if not selected:
-        if priority_queue:
-            selected = priority_queue.pop(0)
-        elif deck:
-            selected = deck.pop(0)
-        else:
-            deck = FULL_DECK.copy()
-            random.shuffle(deck)
-            selected = deck.pop(0)
+        max_cd = max([cd for cd in (rule_cd, map_cd, exact_cd) if cd is not None] or [0])
+        for relax in range(1, max_cd + 1):
+            rr = [] if not rule_cd or rule_cd <= relax else history[-(rule_cd - relax):]
+            mr = [] if not map_cd or map_cd <= relax else history[-(map_cd - relax):]
+            er = [] if not exact_cd or exact_cd <= relax else history[-(exact_cd - relax):]
 
+            def is_valid_relaxed(card):
+                return not (map_cd and is_map_on_cooldown(card, mr)) \
+                   and not (rule_cd and is_rule_on_cooldown(card, rr)) \
+                   and not (exact_cd and is_exact_on_cooldown(card, er))
+
+            valid_idx = next((i for i, c in enumerate(priority_queue) if is_valid_relaxed(c)), None)
+            if valid_idx is not None:
+                selected = priority_queue.pop(valid_idx)
+                break
+
+            valid_idx = next((i for i, c in enumerate(deck) if is_valid_relaxed(c)), None)
+            if valid_idx is not None:
+                selected = deck.pop(valid_idx)
+                break
+
+    # === STEP 5: 最終フォールバック ===
+    if not selected:
+        selected = priority_queue.pop(0) if priority_queue else deck.pop(0)
+
+    # 履歴とトラッシュへ格納
     played_cards.append(selected)
     history.append(selected)
 
-    # history は EXACT_COOLDOWN 分だけ保持すれば十分（最大値）
-    # EXACT_COOLDOWN を変更した場合はここも自動で追従する
-    max_history = max(MAP_COOLDOWN, RULE_COOLDOWN, EXACT_COOLDOWN)
-    if len(history) > max_history:
+    max_history = max([cd for cd in (rule_cd, map_cd, exact_cd) if cd is not None] or [0])
+    keep_len = max(max_history, 15) # 表示用にある程度履歴を残す
+    if len(history) > keep_len:
         history.pop(0)
 
-    state["deck"]           = deck
-    state["priority_queue"] = priority_queue
-    state["played_cards"]   = played_cards
-    state["history"]        = history
+    pl_state.update({
+        "deck": deck,
+        "priority_queue": priority_queue,
+        "played_cards": played_cards,
+        "history": history,
+        "slayer_pool": slayer_pool
+    })
 
     return selected
 
@@ -221,7 +340,6 @@ def draw_match(state: dict) -> dict:
 # =============================================================================
 
 async def _check_busy(interaction: discord.Interaction, lock: asyncio.Lock) -> bool:
-    """ロック中なら busy メッセージを返して True。空きなら False。"""
     if lock.locked():
         await interaction.response.send_message(
             t(interaction.locale, "err_busy"), ephemeral=True
@@ -231,16 +349,127 @@ async def _check_busy(interaction: discord.Interaction, lock: asyncio.Lock) -> b
 
 
 # =============================================================================
+# UI View クラス (/start用)
+# =============================================================================
+
+class StartView(discord.ui.View):
+    def __init__(self, channel_id: int, locale: discord.Locale):
+        super().__init__(timeout=60)
+        self.channel_id = channel_id
+        self.locale = locale
+        self.add_item(PlaylistButton("ranked_arena", t(locale, "btn_ranked"), discord.ButtonStyle.primary))
+        self.add_item(PlaylistButton("ga", t(locale, "btn_ga"), discord.ButtonStyle.success))
+        self.add_item(CancelButton(t(locale, "btn_cancel")))
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        try:
+            if hasattr(self, 'message'):
+                await self.message.edit(content=t(self.locale, "start_timeout"), view=self)
+        except:
+            pass
+
+class PlaylistButton(discord.ui.Button):
+    def __init__(self, pl_id: str, label: str, style: discord.ButtonStyle):
+        super().__init__(style=style, label=label, custom_id=f"pl_{pl_id}")
+        self.pl_id = pl_id
+
+    async def callback(self, interaction: discord.Interaction):
+        view: StartView = self.view
+        locale = view.locale
+        channel_id = view.channel_id
+        
+        state = load_channel_state(channel_id)
+        pl_state = state["playlists"][self.pl_id]
+        
+        last_played = get_jst_time_str(pl_state.get("last_played_at"), locale)
+        remaining = len(pl_state.get("deck", [])) + len(pl_state.get("priority_queue", []))
+        
+        if remaining == 0 and not pl_state.get("played_cards", []):
+            settings = FULL_DECK[self.pl_id]["settings"]
+            cards = FULL_DECK[self.pl_id]["cards"]
+            remaining = get_total_active_cards(settings, cards)
+            
+        pl_name_display = PL_NAMES.get(self.pl_id, self.label)
+        msg = t(locale, "start_save_info", pl_name=pl_name_display, last_played=last_played, remaining=remaining)
+        
+        next_view = ActionView(channel_id, self.pl_id, locale)
+        await interaction.response.edit_message(content=msg, view=next_view)
+        next_view.message = interaction.message
+
+class ActionView(discord.ui.View):
+    def __init__(self, channel_id: int, pl_id: str, locale: discord.Locale):
+        super().__init__(timeout=60)
+        self.channel_id = channel_id
+        self.pl_id = pl_id
+        self.locale = locale
+        
+        self.add_item(ResumeButton(t(locale, "btn_resume")))
+        self.add_item(ResetButton(t(locale, "btn_reset")))
+        self.add_item(CancelButton(t(locale, "btn_cancel")))
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        try:
+            if hasattr(self, 'message'):
+                await self.message.edit(content=t(self.locale, "start_timeout"), view=self)
+        except:
+            pass
+
+class ResumeButton(discord.ui.Button):
+    def __init__(self, label: str):
+        super().__init__(style=discord.ButtonStyle.primary, label=label)
+
+    async def callback(self, interaction: discord.Interaction):
+        view: ActionView = self.view
+        state = load_channel_state(view.channel_id)
+        state["current_playlist"] = view.pl_id
+        save_channel_state(view.channel_id, state)
+        
+        await interaction.response.edit_message(content=t(view.locale, "start_resumed"), view=None)
+
+class ResetButton(discord.ui.Button):
+    def __init__(self, label: str):
+        super().__init__(style=discord.ButtonStyle.danger, label=label)
+
+    async def callback(self, interaction: discord.Interaction):
+        view: ActionView = self.view
+        state = load_channel_state(view.channel_id)
+        state["current_playlist"] = view.pl_id
+        pl_state = state["playlists"][view.pl_id]
+        
+        # デッキ・履歴を初期化（スナップショットは保持）
+        pl_state["deck"] = []
+        pl_state["priority_queue"] = []
+        pl_state["played_cards"] = []
+        pl_state["history"] = []
+        pl_state["slayer_pool"] = []
+        pl_state["last_results"] = []
+        
+        save_channel_state(view.channel_id, state)
+        
+        await interaction.response.edit_message(content=t(view.locale, "start_reset_done"), view=None)
+
+class CancelButton(discord.ui.Button):
+    def __init__(self, label: str):
+        super().__init__(style=discord.ButtonStyle.secondary, label=label)
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        await interaction.response.edit_message(content=t(view.locale, "start_canceled"), view=None)
+
+
+# =============================================================================
 # Bot イベント
 # =============================================================================
 
 @bot.event
 async def on_ready():
-    # 翻訳クラスをCommandTreeに登録してコマンドを同期
     await tree.set_translator(GuiltySparkTranslator())
     await tree.sync()
     
-    # 英語（デフォルト）のステータス表示を取得して設定
     activity_name = t(discord.Locale.american_english, "activity")
     await bot.change_presence(
         status=discord.Status.online,
@@ -253,10 +482,21 @@ async def on_ready():
 # スラッシュコマンド
 # =============================================================================
 
-@tree.command(
-    name="next",
-    description=app_commands.locale_str("next"),
-)
+@tree.command(name="start", description=app_commands.locale_str("start"))
+async def cmd_start(interaction: discord.Interaction):
+    locale = interaction.locale
+    channel_id = interaction.channel_id
+    lock = get_channel_lock(channel_id)
+
+    if await _check_busy(interaction, lock):
+        return
+
+    view = StartView(channel_id, locale)
+    await interaction.response.send_message(t(locale, "start_prompt"), view=view, ephemeral=False)
+    view.message = await interaction.original_response()
+
+
+@tree.command(name="next", description=app_commands.locale_str("next"))
 @app_commands.describe(count=app_commands.locale_str("next.count"))
 @app_commands.rename(count="count")
 async def cmd_next(interaction: discord.Interaction, count: int = 1):
@@ -279,20 +519,24 @@ async def cmd_next(interaction: discord.Interaction, count: int = 1):
     try:
         async with lock:
             state = load_channel_state(channel_id)
+            current_pl = state.get("current_playlist", "ranked_arena")
+            pl_state = state["playlists"][current_pl]
+            settings = FULL_DECK[current_pl]["settings"]
+            cards = FULL_DECK[current_pl]["cards"]
 
-            state["snapshot"] = {
-                "deck":           copy.deepcopy(state.get("deck", [])),
-                "priority_queue": copy.deepcopy(state.get("priority_queue", [])),
-                "played_cards":   copy.deepcopy(state.get("played_cards", [])),
-                "history":        copy.deepcopy(state.get("history", [])),
-            }
-
-            results = [draw_match(state) for _ in range(count)]
-            state["last_results"] = results
+            snap_id = create_snapshot(pl_state)
+            
+            results = [draw_match(pl_state, settings, cards) for _ in range(count)]
+            pl_state["last_results"] = results
+            pl_state["last_played_at"] = datetime.now(timezone.utc).isoformat()
+            
             save_channel_state(channel_id, state)
-            remaining = len(state.get("deck", [])) + len(state.get("priority_queue", []))
+            
+            total_active_cards = get_total_active_cards(settings, cards)
+            remaining = len(pl_state.get("deck", [])) + len(pl_state.get("priority_queue", []))
 
-            msg = t(locale, "next_header", remaining=remaining, total=len(FULL_DECK))
+            pl_name = PL_NAMES.get(current_pl, current_pl)
+            msg = t(locale, "next_header", pl_name=pl_name, id=snap_id, remaining=remaining, total=total_active_cards)
             for i, m in enumerate(results, 1):
                 msg += t(locale, "match_line", i=i, map=m["map"], rule=m["rule"])
 
@@ -303,10 +547,51 @@ async def cmd_next(interaction: discord.Interaction, count: int = 1):
         await interaction.followup.send(t(locale, "err_generic"), ephemeral=True)
 
 
-@tree.command(
-    name="redraw",
-    description=app_commands.locale_str("redraw"),
-)
+@tree.command(name="backto", description=app_commands.locale_str("backto"))
+@app_commands.describe(snapshot_id=app_commands.locale_str("backto.id"))
+async def cmd_backto(interaction: discord.Interaction, snapshot_id: int):
+    locale = interaction.locale
+    channel_id = interaction.channel_id
+    lock = get_channel_lock(channel_id)
+
+    if await _check_busy(interaction, lock):
+        return
+
+    await interaction.response.defer(ephemeral=False)
+
+    try:
+        async with lock:
+            state = load_channel_state(channel_id)
+            current_pl = state.get("current_playlist", "ranked_arena")
+            pl_state = state["playlists"][current_pl]
+            
+            target_snapshot = next((s for s in pl_state.get("snapshots", []) if s["id"] == snapshot_id), None)
+            
+            if not target_snapshot:
+                await interaction.followup.send(t(locale, "err_invalid_snapshot"), ephemeral=True)
+                return
+
+            restore_snapshot(pl_state, target_snapshot["state"])
+            
+            # 指定ID以降の未来のスナップショットを破棄
+            pl_state["snapshots"] = [s for s in pl_state["snapshots"] if s["id"] <= snapshot_id]
+            
+            save_channel_state(channel_id, state)
+            
+            settings = FULL_DECK[current_pl]["settings"]
+            cards = FULL_DECK[current_pl]["cards"]
+            total_active_cards = get_total_active_cards(settings, cards)
+            remaining = len(pl_state.get("deck", [])) + len(pl_state.get("priority_queue", []))
+
+            msg = t(locale, "backto_success", id=snapshot_id, remaining=remaining, total=total_active_cards)
+        await interaction.followup.send(msg)
+
+    except Exception as e:
+        print(f"Error in /backto: {e}")
+        await interaction.followup.send(t(locale, "err_generic"), ephemeral=True)
+
+
+@tree.command(name="redraw", description=app_commands.locale_str("redraw"))
 async def cmd_redraw(interaction: discord.Interaction):
     locale = interaction.locale
     channel_id = interaction.channel_id
@@ -320,34 +605,36 @@ async def cmd_redraw(interaction: discord.Interaction):
     try:
         async with lock:
             state = load_channel_state(channel_id)
-            snapshot     = state.get("snapshot")
-            last_results = state.get("last_results", [])
+            current_pl = state.get("current_playlist", "ranked_arena")
+            pl_state = state["playlists"][current_pl]
+            snapshots = pl_state.get("snapshots", [])
+            last_results = pl_state.get("last_results", [])
 
-            if not snapshot:
-                await interaction.followup.send(
-                    t(locale, "err_no_snapshot"), ephemeral=True
-                )
+            if not snapshots:
+                await interaction.followup.send(t(locale, "err_no_snapshot"), ephemeral=True)
                 return
             if not last_results:
-                await interaction.followup.send(
-                    t(locale, "err_no_last_results"), ephemeral=True
-                )
+                await interaction.followup.send(t(locale, "err_no_last_results"), ephemeral=True)
                 return
 
-            state["deck"]           = copy.deepcopy(snapshot["deck"])
-            state["priority_queue"] = copy.deepcopy(snapshot["priority_queue"])
-            state["played_cards"]   = copy.deepcopy(snapshot["played_cards"])
-            state["history"]        = copy.deepcopy(snapshot["history"])
+            target_snapshot = snapshots[-1]
+            snap_id = target_snapshot["id"]
+            restore_snapshot(pl_state, target_snapshot["state"])
 
-            # 山札をシャッフルしないと復元→再抽選で同じ並びになり結果が一致する
-            random.shuffle(state["deck"])
-
-            results = [draw_match(state) for _ in range(len(last_results))]
-            state["last_results"] = results
+            settings = FULL_DECK[current_pl]["settings"]
+            cards = FULL_DECK[current_pl]["cards"]
+            results = [draw_match(pl_state, settings, cards) for _ in range(len(last_results))]
+            
+            pl_state["last_results"] = results
+            pl_state["last_played_at"] = datetime.now(timezone.utc).isoformat()
+            
             save_channel_state(channel_id, state)
-            remaining = len(state.get("deck", [])) + len(state.get("priority_queue", []))
-
-            msg = t(locale, "redraw_header", remaining=remaining, total=len(FULL_DECK))
+            
+            total_active_cards = get_total_active_cards(settings, cards)
+            remaining = len(pl_state.get("deck", [])) + len(pl_state.get("priority_queue", []))
+            
+            pl_name = PL_NAMES.get(current_pl, current_pl)
+            msg = t(locale, "redraw_header", pl_name=pl_name, id=snap_id, remaining=remaining, total=total_active_cards)
             for i, m in enumerate(results, 1):
                 msg += t(locale, "match_line", i=i, map=m["map"], rule=m["rule"])
 
@@ -358,10 +645,7 @@ async def cmd_redraw(interaction: discord.Interaction):
         await interaction.followup.send(t(locale, "err_generic"), ephemeral=True)
 
 
-@tree.command(
-    name="reset",
-    description=app_commands.locale_str("reset"),
-)
+@tree.command(name="reset", description=app_commands.locale_str("reset"))
 async def cmd_reset(interaction: discord.Interaction):
     locale = interaction.locale
     channel_id = interaction.channel_id
@@ -374,21 +658,28 @@ async def cmd_reset(interaction: discord.Interaction):
 
     try:
         async with lock:
-            path = f"{DATA_DIR}/{channel_id}.json"
-            if os.path.exists(path):
-                os.remove(path)
+            state = load_channel_state(channel_id)
+            current_pl = state.get("current_playlist", "ranked_arena")
+            pl_state = state["playlists"][current_pl]
+            
+            pl_state["deck"] = []
+            pl_state["priority_queue"] = []
+            pl_state["played_cards"] = []
+            pl_state["history"] = []
+            pl_state["slayer_pool"] = []
+            pl_state["last_results"] = []
+            
+            save_channel_state(channel_id, state)
 
-        await interaction.followup.send(t(locale, "reset_done"))
+            pl_name = PL_NAMES.get(current_pl, current_pl)
+        await interaction.followup.send(t(locale, "reset_done", pl_name=pl_name))
 
     except Exception as e:
         print(f"Error in /reset: {e}")
         await interaction.followup.send(t(locale, "err_generic"), ephemeral=True)
 
 
-@tree.command(
-    name="deck",
-    description=app_commands.locale_str("deck"),
-)
+@tree.command(name="deck", description=app_commands.locale_str("deck"))
 async def cmd_deck(interaction: discord.Interaction):
     locale = interaction.locale
     channel_id = interaction.channel_id
@@ -402,20 +693,37 @@ async def cmd_deck(interaction: discord.Interaction):
     try:
         async with lock:
             state = load_channel_state(channel_id)
-            deck_cards = state.get("deck", [])
-            pq_cards   = state.get("priority_queue", [])
+            current_pl = state.get("current_playlist", "ranked_arena")
+            pl_state = state["playlists"][current_pl]
+            settings = FULL_DECK[current_pl]["settings"]
+            cards = FULL_DECK[current_pl]["cards"]
 
-            # 初期状態（まだ1回も引いていない）はフルデッキを表示
-            if not deck_cards and not pq_cards and not state.get("played_cards", []):
-                deck_cards = FULL_DECK.copy()
+            deck_cards  = pl_state.get("deck", [])
+            pq_cards    = pl_state.get("priority_queue", [])
+            slayer_pool = pl_state.get("slayer_pool", [])
 
-            history = state.get("history", [])
-            msg  = t(locale, "deck_header") + "\n"
+            # 初期状態
+            if not deck_cards and not pq_cards and not pl_state.get("played_cards", []):
+                all_slayers = [c for c in cards if c["rule"] == "Slayer"]
+                random.shuffle(all_slayers)
+                active_slayer_count = settings.get("active_slayer_count")
+                
+                if active_slayer_count is not None:
+                    deck_cards = [c for c in cards if c["rule"] != "Slayer"] + all_slayers[:active_slayer_count]
+                    slayer_pool = all_slayers[active_slayer_count:]
+                else:
+                    deck_cards = [c for c in cards if c["rule"] != "Slayer"] + all_slayers
+                    slayer_pool = []
+
+            history = pl_state.get("history", [])
+            pl_name = PL_NAMES.get(current_pl, current_pl)
+            
+            msg  = t(locale, "deck_header", pl_name=pl_name) + "\n"
             msg += t(locale, "deck_section", count=len(deck_cards))
             if deck_cards:
                 for c in sorted(deck_cards, key=lambda x: (x["map"], x["rule"])):
                     if history:
-                        m, r, e = get_cooldown_remaining(c, history)
+                        m, r, e = get_cooldown_remaining(c, history, settings)
                         cd = f" (🚫🗺️{m} ⚔️{r} 🔁{e})" if m > 0 or r > 0 or e > 0 else " ✅"
                     else:
                         cd = ""
@@ -427,11 +735,18 @@ async def cmd_deck(interaction: discord.Interaction):
             if pq_cards:
                 for c in sorted(pq_cards, key=lambda x: (x["map"], x["rule"])):
                     if history:
-                        m, r, e = get_cooldown_remaining(c, history)
+                        m, r, e = get_cooldown_remaining(c, history, settings)
                         cd = f" (🚫🗺️{m} ⚔️{r} 🔁{e})" if m > 0 or r > 0 or e > 0 else " ✅"
                     else:
                         cd = ""
                     msg += f"・🗺️ {c['map']} | ⚔️ {c['rule']}{cd}\n"
+            else:
+                msg += t(locale, "none")
+                
+            msg += t(locale, "deck_excluded", count=len(slayer_pool))
+            if slayer_pool:
+                for c in sorted(slayer_pool, key=lambda x: (x["map"], x["rule"])):
+                    msg += f"・🗺️ {c['map']} | ⚔️ {c['rule']}\n"
             else:
                 msg += t(locale, "none")
 
@@ -442,10 +757,7 @@ async def cmd_deck(interaction: discord.Interaction):
         await interaction.followup.send(t(locale, "err_generic"), ephemeral=True)
 
 
-@tree.command(
-    name="history",
-    description=app_commands.locale_str("history"),
-)
+@tree.command(name="history", description=app_commands.locale_str("history"))
 async def cmd_history(interaction: discord.Interaction):
     locale = interaction.locale
     channel_id = interaction.channel_id
@@ -459,12 +771,15 @@ async def cmd_history(interaction: discord.Interaction):
     try:
         async with lock:
             state = load_channel_state(channel_id)
-            history_list = state.get("history", [])
+            current_pl = state.get("current_playlist", "ranked_arena")
+            pl_state = state["playlists"][current_pl]
+            history_list = pl_state.get("history", [])
+            pl_name = PL_NAMES.get(current_pl, current_pl)
 
             if not history_list:
-                msg = t(locale, "history_empty")
+                msg = t(locale, "history_empty", pl_name=pl_name)
             else:
-                msg = t(locale, "history_header", count=len(history_list))
+                msg = t(locale, "history_header", count=len(history_list), pl_name=pl_name)
                 for i, m in enumerate(history_list, 1):
                     msg += f"{i}. 🗺️ **{m['map']}** | ⚔️ **{m['rule']}**\n"
 
@@ -475,10 +790,7 @@ async def cmd_history(interaction: discord.Interaction):
         await interaction.followup.send(t(locale, "err_generic"), ephemeral=True)
 
 
-@tree.command(
-    name="status",
-    description=app_commands.locale_str("status"),
-)
+@tree.command(name="status", description=app_commands.locale_str("status"))
 async def cmd_status(interaction: discord.Interaction):
     locale = interaction.locale
     channel_id = interaction.channel_id
@@ -492,21 +804,36 @@ async def cmd_status(interaction: discord.Interaction):
     try:
         async with lock:
             state = load_channel_state(channel_id)
-            deck_count   = len(state.get("deck", []))
-            pq_count     = len(state.get("priority_queue", []))
-            played_count = len(state.get("played_cards", []))
+            current_pl = state.get("current_playlist", "ranked_arena")
+            pl_state = state["playlists"][current_pl]
+            settings = FULL_DECK[current_pl]["settings"]
+            cards = FULL_DECK[current_pl]["cards"]
 
-            # 未使用状態はフルデッキ相当として表示
+            deck_count   = len(pl_state.get("deck", []))
+            pq_count     = len(pl_state.get("priority_queue", []))
+            played_count = len(pl_state.get("played_cards", []))
+            excluded_count = len(pl_state.get("slayer_pool", []))
+
             if deck_count == 0 and pq_count == 0 and played_count == 0:
-                deck_count = len(FULL_DECK)
+                all_slayers = sum(1 for c in cards if c["rule"] == "Slayer")
+                active_slayer_count = settings.get("active_slayer_count")
+                if active_slayer_count is not None:
+                    excluded_count = max(0, all_slayers - active_slayer_count)
+                else:
+                    excluded_count = 0
+                deck_count = len(cards) - excluded_count
 
-            history_count = len(state.get("history", []))
+            history_count = len(pl_state.get("history", []))
+            snap_count = len(pl_state.get("snapshots", []))
+            pl_name = PL_NAMES.get(current_pl, current_pl)
 
-            msg  = t(locale, "status_header")
+            msg  = t(locale, "status_header", pl_name=pl_name)
             msg += t(locale, "status_deck",    count=deck_count)
             msg += t(locale, "status_pq",      count=pq_count)
             msg += t(locale, "status_trash",   count=played_count)
+            msg += t(locale, "status_excluded",count=excluded_count)
             msg += t(locale, "status_history", count=history_count)
+            msg += f"📸 Snapshots retained: **{snap_count}**\n"
 
         await interaction.followup.send(msg)
 
@@ -528,7 +855,7 @@ def run_dummy_server():
             self.wfile.write(b"I am 031 Exuberant Witness. The matchmaker is online.")
 
         def log_message(self, format, *args):
-            pass  # アクセスログを抑制
+            pass
 
     port = int(os.getenv("PORT", 10000))
     HTTPServer(("0.0.0.0", port), DummyHandler).serve_forever()

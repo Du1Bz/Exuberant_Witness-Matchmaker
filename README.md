@@ -17,7 +17,9 @@ https://github.com/user-attachments/assets/d5ab6c15-4fb0-4392-ba98-db9dc3cc7c1e
 Exuberant Witness shuffles map & rule combinations into a deck and draws from the top. Instead of pure RNG, it uses a smart algorithm to prevent repetitive matches.
 
 - **Cooldown logic** prevents back-to-back duplicates: same map (last 4 matches), same rule type (last 3 matches), and exact same combination (last 7 matches) are automatically blocked.
+- **Adjustable Slayer rate**: Only 4 out of 6 Slayers are kept active to reduce their appearance rate (tuned from launch based on community feedback). When selected, all active Slayers have equal probability with no bias.
 - **Priority Queue System**: If all remaining cards in the deck are blocked by cooldowns (a dead end), they are temporarily moved to the Priority Queue. The trash pile is then reshuffled into a new deck to keep the games rolling. Cards in the Priority Queue will be drawn first as soon as their cooldowns expire.
+- **Gradual Relaxation Fallback**: If no valid card is found even after a deck reset, cooldowns are gradually relaxed one match at a time and retried. This ensures that forced picks (violating cooldowns) effectively never occur.
 - **Per-channel decks** allow multiple custom lobbies to run simultaneously without interfering with each other.
 - Available 24/7 with instant responses.
 
@@ -30,7 +32,7 @@ Exuberant Witness shuffles map & rule combinations into a deck and draws from th
 | `/next` | Draw the next match combination (remaining count shown). |
 | `/next count:3` | Draw multiple combinations at once (1–5). |
 | `/redraw` | Return the previous draw to the deck and draw again. |
-| `/reset` | Reset the deck and reshuffle all 22 cards. |
+| `/reset` | Reset the deck and reshuffle into a new deck. |
 | `/deck` | Show combinations remaining in the current deck (alphabetical order). |
 | `/history` | Show recently played combinations (admin). |
 | `/status` | Show internal deck state — card counts per zone (admin). |
