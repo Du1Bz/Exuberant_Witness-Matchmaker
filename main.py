@@ -59,14 +59,15 @@ def get_jst_time_str(iso_str: str, locale: discord.Locale) -> str:
     except:
         return t(locale, "never_played")
 
-def get_total_active_cards(settings: dict, cards: list) -> int:
+def get_excluded_slayer_count(settings: dict, cards: list) -> int:
     active_slayer_count = settings.get("active_slayer_count")
+    if active_slayer_count is None:
+        return 0
     all_slayers = sum(1 for c in cards if c["rule"] == "Slayer")
-    if active_slayer_count is not None:
-        excluded_count = max(0, all_slayers - active_slayer_count)
-    else:
-        excluded_count = 0
-    return len(cards) - excluded_count
+    return max(0, all_slayers - active_slayer_count)
+
+def get_total_active_cards(settings: dict, cards: list) -> int:
+    return len(cards) - get_excluded_slayer_count(settings, cards)
 
 
 # =============================================================================
@@ -175,6 +176,19 @@ def restore_snapshot(pl_state: dict, snap_state: dict) -> None:
     pl_state["history"]        = copy.deepcopy(snap_state["history"])
     pl_state["slayer_pool"]    = copy.deepcopy(snap_state["slayer_pool"])
     random.shuffle(pl_state["deck"])
+
+def backto_snapshot(pl_state: dict, snapshot_id: int) -> bool:
+    """指定IDのスナップショットへ復元し、それより新しいスナップショットを破棄する。
+    /backto と /redraw（最新IDへのbacktoとして内部統合）の共通処理。"""
+    target_snapshot = next((s for s in pl_state.get("snapshots", []) if s["id"] == snapshot_id), None)
+    if not target_snapshot:
+        return False
+
+    restore_snapshot(pl_state, target_snapshot["state"])
+
+    # 指定ID以降の未来のスナップショットを破棄
+    pl_state["snapshots"] = [s for s in pl_state["snapshots"] if s["id"] <= snapshot_id]
+    return True
 
 
 # =============================================================================
@@ -367,8 +381,8 @@ class StartView(discord.ui.View):
         try:
             if hasattr(self, 'message'):
                 await self.message.edit(content=t(self.locale, "start_timeout"), view=self)
-        except:
-            pass
+        except Exception as e:
+            print(f"Error in StartView.on_timeout: {e}")
 
 class PlaylistButton(discord.ui.Button):
     def __init__(self, pl_id: str, label: str, style: discord.ButtonStyle):
@@ -379,21 +393,26 @@ class PlaylistButton(discord.ui.Button):
         view: StartView = self.view
         locale = view.locale
         channel_id = view.channel_id
-        
-        state = load_channel_state(channel_id)
-        pl_state = state["playlists"][self.pl_id]
-        
-        last_played = get_jst_time_str(pl_state.get("last_played_at"), locale)
-        remaining = len(pl_state.get("deck", [])) + len(pl_state.get("priority_queue", []))
-        
-        if remaining == 0 and not pl_state.get("played_cards", []):
-            settings = FULL_DECK[self.pl_id]["settings"]
-            cards = FULL_DECK[self.pl_id]["cards"]
-            remaining = get_total_active_cards(settings, cards)
-            
+        lock = get_channel_lock(channel_id)
+
+        if await _check_busy(interaction, lock):
+            return
+
+        async with lock:
+            state = load_channel_state(channel_id)
+            pl_state = state["playlists"][self.pl_id]
+
+            last_played = get_jst_time_str(pl_state.get("last_played_at"), locale)
+            remaining = len(pl_state.get("deck", [])) + len(pl_state.get("priority_queue", []))
+
+            if remaining == 0 and not pl_state.get("played_cards", []):
+                settings = FULL_DECK[self.pl_id]["settings"]
+                cards = FULL_DECK[self.pl_id]["cards"]
+                remaining = get_total_active_cards(settings, cards)
+
         pl_name_display = PL_NAMES.get(self.pl_id, self.label)
         msg = t(locale, "start_save_info", pl_name=pl_name_display, last_played=last_played, remaining=remaining)
-        
+
         next_view = ActionView(channel_id, self.pl_id, locale)
         await interaction.response.edit_message(content=msg, view=next_view)
         next_view.message = interaction.message
@@ -415,8 +434,8 @@ class ActionView(discord.ui.View):
         try:
             if hasattr(self, 'message'):
                 await self.message.edit(content=t(self.locale, "start_timeout"), view=self)
-        except:
-            pass
+        except Exception as e:
+            print(f"Error in ActionView.on_timeout: {e}")
 
 class ResumeButton(discord.ui.Button):
     def __init__(self, label: str):
@@ -424,10 +443,18 @@ class ResumeButton(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction):
         view: ActionView = self.view
-        state = load_channel_state(view.channel_id)
-        state["current_playlist"] = view.pl_id
-        save_channel_state(view.channel_id, state)
-        
+        channel_id = view.channel_id
+        lock = get_channel_lock(channel_id)
+
+        if await _check_busy(interaction, lock):
+            return
+
+        view.stop()
+        async with lock:
+            state = load_channel_state(channel_id)
+            state["current_playlist"] = view.pl_id
+            save_channel_state(channel_id, state)
+
         await interaction.response.edit_message(content=t(view.locale, "start_resumed"), view=None)
 
 class ResetButton(discord.ui.Button):
@@ -436,20 +463,28 @@ class ResetButton(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction):
         view: ActionView = self.view
-        state = load_channel_state(view.channel_id)
-        state["current_playlist"] = view.pl_id
-        pl_state = state["playlists"][view.pl_id]
-        
-        # デッキ・履歴を初期化（スナップショットは保持）
-        pl_state["deck"] = []
-        pl_state["priority_queue"] = []
-        pl_state["played_cards"] = []
-        pl_state["history"] = []
-        pl_state["slayer_pool"] = []
-        pl_state["last_results"] = []
-        
-        save_channel_state(view.channel_id, state)
-        
+        channel_id = view.channel_id
+        lock = get_channel_lock(channel_id)
+
+        if await _check_busy(interaction, lock):
+            return
+
+        view.stop()
+        async with lock:
+            state = load_channel_state(channel_id)
+            state["current_playlist"] = view.pl_id
+            pl_state = state["playlists"][view.pl_id]
+
+            # デッキ・履歴を初期化（スナップショットは保持）
+            pl_state["deck"] = []
+            pl_state["priority_queue"] = []
+            pl_state["played_cards"] = []
+            pl_state["history"] = []
+            pl_state["slayer_pool"] = []
+            pl_state["last_results"] = []
+
+            save_channel_state(channel_id, state)
+
         await interaction.response.edit_message(content=t(view.locale, "start_reset_done"), view=None)
 
 class CancelButton(discord.ui.Button):
@@ -458,6 +493,7 @@ class CancelButton(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction):
         view = self.view
+        view.stop()
         await interaction.response.edit_message(content=t(view.locale, "start_canceled"), view=None)
 
 
@@ -564,18 +600,11 @@ async def cmd_backto(interaction: discord.Interaction, snapshot_id: int):
             state = load_channel_state(channel_id)
             current_pl = state.get("current_playlist", "ranked_arena")
             pl_state = state["playlists"][current_pl]
-            
-            target_snapshot = next((s for s in pl_state.get("snapshots", []) if s["id"] == snapshot_id), None)
-            
-            if not target_snapshot:
+
+            if not backto_snapshot(pl_state, snapshot_id):
                 await interaction.followup.send(t(locale, "err_invalid_snapshot"), ephemeral=True)
                 return
 
-            restore_snapshot(pl_state, target_snapshot["state"])
-            
-            # 指定ID以降の未来のスナップショットを破棄
-            pl_state["snapshots"] = [s for s in pl_state["snapshots"] if s["id"] <= snapshot_id]
-            
             save_channel_state(channel_id, state)
             
             settings = FULL_DECK[current_pl]["settings"]
@@ -619,7 +648,9 @@ async def cmd_redraw(interaction: discord.Interaction):
 
             target_snapshot = snapshots[-1]
             snap_id = target_snapshot["id"]
-            restore_snapshot(pl_state, target_snapshot["state"])
+            # /redraw は「最新スナップショットへのbacktoした上で再抽選する」処理として、
+            # /backto と共通の復元処理(backto_snapshot)を利用する
+            backto_snapshot(pl_state, snap_id)
 
             settings = FULL_DECK[current_pl]["settings"]
             cards = FULL_DECK[current_pl]["cards"]
@@ -815,12 +846,7 @@ async def cmd_status(interaction: discord.Interaction):
             excluded_count = len(pl_state.get("slayer_pool", []))
 
             if deck_count == 0 and pq_count == 0 and played_count == 0:
-                all_slayers = sum(1 for c in cards if c["rule"] == "Slayer")
-                active_slayer_count = settings.get("active_slayer_count")
-                if active_slayer_count is not None:
-                    excluded_count = max(0, all_slayers - active_slayer_count)
-                else:
-                    excluded_count = 0
+                excluded_count = get_excluded_slayer_count(settings, cards)
                 deck_count = len(cards) - excluded_count
 
             history_count = len(pl_state.get("history", []))
@@ -833,7 +859,7 @@ async def cmd_status(interaction: discord.Interaction):
             msg += t(locale, "status_trash",   count=played_count)
             msg += t(locale, "status_excluded",count=excluded_count)
             msg += t(locale, "status_history", count=history_count)
-            msg += f"📸 Snapshots retained: **{snap_count}**\n"
+            msg += t(locale, "status_snapshots", count=snap_count)
 
         await interaction.followup.send(msg)
 

@@ -185,6 +185,10 @@ _MSG = {
         "en": "📜 History retained: **{count}** matches\n",
         "ja": "📜 履歴保持数: **{count}** 試合\n",
     },
+    "status_snapshots": {
+        "en": "📸 Snapshots retained: **{count}**\n",
+        "ja": "📸 スナップショット保持数: **{count}**\n",
+    },
     # エラー・共通
     "err_count_range": {
         "en": "💡 You can request 1–5 matches at a time.",

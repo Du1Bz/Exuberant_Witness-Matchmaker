@@ -20,6 +20,7 @@ Exuberant Witness shuffles map & rule combinations into a deck and draws from th
 - **Adjustable Slayer rate**: Only 4 out of 6 Slayers are kept active to reduce their appearance rate (tuned from launch based on community feedback). When selected, all active Slayers have equal probability with no bias.
 - **Priority Queue System**: If all remaining cards in the deck are blocked by cooldowns (a dead end), they are temporarily moved to the Priority Queue. The trash pile is then reshuffled into a new deck to keep the games rolling. Cards in the Priority Queue will be drawn first as soon as their cooldowns expire.
 - **Gradual Relaxation Fallback**: If no valid card is found even after a deck reset, cooldowns are gradually relaxed one match at a time and retried. This ensures that forced picks (violating cooldowns) effectively never occur.
+- **Playlist System** (`/start`): Choose between **Ranked Arena** and **GA (Gentleman's Agreement)** playlists. Each playlist has its own separate deck, cooldown settings, and snapshot history. Use `/start` to select or switch playlists.
 - **Per-channel decks** allow multiple custom lobbies to run simultaneously without interfering with each other.
 - Available 24/7 with instant responses.
 
@@ -29,10 +30,12 @@ Exuberant Witness shuffles map & rule combinations into a deck and draws from th
 
 | Command | Description |
 |---------|-------------|
+| `/start` | Start a custom match — select a playlist (Ranked Arena / GA), then choose to resume from save or reset. |
 | `/next` | Draw the next match combination (remaining count shown). |
 | `/next count:3` | Draw multiple combinations at once (1–5). |
 | `/redraw` | Return the previous draw to the deck and draw again. |
-| `/reset` | Reset the deck and reshuffle into a new deck. |
+| `/backto <id>` | Revert the simulation state to a specific snapshot ID and reshuffle. |
+| `/reset` | Reset and reshuffle the deck for the **current** playlist only. |
 | `/deck` | Show combinations remaining in the current deck (alphabetical order). |
 | `/history` | Show recently played combinations (admin). |
 | `/status` | Show internal deck state — card counts per zone (admin). |
@@ -52,6 +55,18 @@ Exuberant Witness shuffles map & rule combinations into a deck and draws from th
 ```
 
 Normally, cards are drawn from the Deck. If every remaining card in the deck violates a cooldown rule, those cards are shifted to the Priority Queue, and the Trash is reshuffled into a new deck. Cards in the Priority Queue take precedence and will be drawn as soon as they become valid again.
+
+### Playlist System
+
+Use `/start` to begin a custom match session. The bot presents two steps:
+
+1. **Select a playlist**: Ranked Arena or GA (Gentleman's Agreement).
+2. **Choose action**: Resume from existing save data, or reset and start over.
+
+Each playlist maintains its own deck state, cooldown settings, and snapshot history independently. The current playlist is remembered per channel.
+
+> The GA playlist uses its own cooldown settings (`rule_cooldown: 3`, `map_cooldown: 3`, `exact_cooldown: 5`) and its own set of 17 map/rule combinations.
+
 ---
 
 ## Server Setup
