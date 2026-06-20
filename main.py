@@ -413,6 +413,7 @@ class PlaylistButton(discord.ui.Button):
         pl_name_display = PL_NAMES.get(self.pl_id, self.label)
         msg = t(locale, "start_save_info", pl_name=pl_name_display, last_played=last_played, remaining=remaining)
 
+        view.stop()
         next_view = ActionView(channel_id, self.pl_id, locale)
         await interaction.response.edit_message(content=msg, view=next_view)
         next_view.message = interaction.message
