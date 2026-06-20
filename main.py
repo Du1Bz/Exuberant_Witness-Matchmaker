@@ -178,8 +178,8 @@ def restore_snapshot(pl_state: dict, snap_state: dict) -> None:
     random.shuffle(pl_state["deck"])
 
 def backto_snapshot(pl_state: dict, snapshot_id: int) -> bool:
-    """指定IDのスナップショットへ復元し、それより新しいスナップショットを破棄する。
-    /backto と /redraw（最新IDへのbacktoとして内部統合）の共通処理。"""
+    """指定ID自体に紐づくスナップショット（=そのIDの抽選が起こる直前の状態）へ復元する。
+    /redraw が「直前の抽選を取り消して引き直す」ために使う低レベル処理。"""
     target_snapshot = next((s for s in pl_state.get("snapshots", []) if s["id"] == snapshot_id), None)
     if not target_snapshot:
         return False
@@ -189,6 +189,24 @@ def backto_snapshot(pl_state: dict, snapshot_id: int) -> bool:
     # 指定ID以降の未来のスナップショットを破棄
     pl_state["snapshots"] = [s for s in pl_state["snapshots"] if s["id"] <= snapshot_id]
     return True
+
+def backto_user_id(pl_state: dict, user_id: int) -> str:
+    """/backto コマンド用：ユーザーが見ているID（=そのIDの抽選結果が表示された直後の状態）へ戻る。
+    データ上は「user_id+1」のスナップショット（=次の抽選の直前の状態）と同じ内容になる。
+    戻り値: "restored"（巻き戻した） / "already_current"（既にその状態） / "not_found"（無効なID）"""
+    snapshots = pl_state.get("snapshots", [])
+
+    if not any(s["id"] == user_id for s in snapshots):
+        return "not_found"
+
+    next_id = user_id + 1
+    if any(s["id"] == next_id for s in snapshots):
+        backto_snapshot(pl_state, next_id)
+        return "restored"
+    else:
+        # user_id が現在の最新の抽選＝既にその直後の状態にいる（変更不要）
+        pl_state["snapshots"] = [s for s in snapshots if s["id"] <= user_id]
+        return "already_current"
 
 
 # =============================================================================
@@ -602,18 +620,23 @@ async def cmd_backto(interaction: discord.Interaction, snapshot_id: int):
             current_pl = state.get("current_playlist", "ranked_arena")
             pl_state = state["playlists"][current_pl]
 
-            if not backto_snapshot(pl_state, snapshot_id):
+            result = backto_user_id(pl_state, snapshot_id)
+
+            if result == "not_found":
                 await interaction.followup.send(t(locale, "err_invalid_snapshot"), ephemeral=True)
                 return
 
             save_channel_state(channel_id, state)
-            
+
             settings = FULL_DECK[current_pl]["settings"]
             cards = FULL_DECK[current_pl]["cards"]
             total_active_cards = get_total_active_cards(settings, cards)
             remaining = len(pl_state.get("deck", [])) + len(pl_state.get("priority_queue", []))
 
-            msg = t(locale, "backto_success", id=snapshot_id, remaining=remaining, total=total_active_cards)
+            if result == "already_current":
+                msg = t(locale, "backto_already_current", id=snapshot_id)
+            else:
+                msg = t(locale, "backto_success", id=snapshot_id, remaining=remaining, total=total_active_cards)
         await interaction.followup.send(msg)
 
     except Exception as e:

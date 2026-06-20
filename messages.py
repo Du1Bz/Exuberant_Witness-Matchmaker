@@ -116,6 +116,10 @@ _MSG = {
         "en": "⏪ Reverted to Snapshot ID **{id}** and reshuffled the deck. (Remaining: {remaining}/{total})",
         "ja": "⏪ スナップショット ID **{id}** の状態に巻き戻し、山札を再シャッフルしました。(残データ: {remaining}/{total})",
     },
+    "backto_already_current": {
+        "en": "✅ Already at the state of Snapshot ID **{id}**. No changes made.",
+        "ja": "✅ すでにスナップショット ID **{id}** の状態です。変更はありません。",
+    },
     "err_invalid_snapshot": {
         "en": "❌ Invalid Snapshot ID. Snapshot not found or too old.",
         "ja": "❌ 無効なスナップショットIDです。見つからないか、古すぎて破棄されています。",
